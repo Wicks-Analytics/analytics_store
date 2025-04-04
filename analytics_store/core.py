@@ -52,7 +52,7 @@ class DoubleLiftResult:
     joint_lift: float
     conditional_lift: float
 
-class DataAnalyzer:
+class DataAnalyser:
     """Main class for data analysis operations using Polars."""
     
     def __init__(self):

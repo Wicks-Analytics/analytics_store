@@ -1,5 +1,5 @@
 """
-AnalyticsStore - A Python package for data analysis and analytics using Polars.
+analytics_store - A Python package for data analysis and analytics using Polars.
 
 This package provides tools for:
 - Lift curve analysis
@@ -9,7 +9,7 @@ This package provides tools for:
 """
 
 from .core import (
-    DataAnalyzer,
+    DataAnalyser,
     LiftResult,
     DoubleLiftResult,
     ROCResult,
@@ -21,7 +21,7 @@ __version__ = "0.1.0"
 __author__ = "Wicks Analytics LTD"
 
 __all__ = [
-    'DataAnalyzer',
+    'DataAnalyser',
     'LiftResult',
     'DoubleLiftResult',
     'ROCResult',

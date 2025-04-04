@@ -1,12 +1,12 @@
 import pytest
 import polars as pl
 import numpy as np
-from analytics_store.core import DataAnalyzer
+from analytics_store.core import DataAnalyser
 
 @pytest.fixture
 def analyzer():
-    """Create a DataAnalyzer instance for testing."""
-    return DataAnalyzer()
+    """Create a DataAnalyser instance for testing."""
+    return DataAnalyser()
 
 @pytest.fixture
 def sample_data():

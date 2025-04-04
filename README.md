@@ -37,10 +37,10 @@ pip install analytics-store
 ## Quick Start
 
 ```python
-from analytics_store import DataAnalyzer
+from analytics_store import DataAnalyser
 
 # Initialize analyzer and load data
-analyzer = DataAnalyzer()
+analyzer = DataAnalyser()
 analyzer.load_data("model_results.csv")
 
 # Basic lift curve analysis
