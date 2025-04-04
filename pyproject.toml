@@ -36,5 +36,5 @@ dependencies = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/wicks-analytics/analytics-store"
-"Bug Tracker" = "https://github.com/wicks-analytics/analytics-store/issues"
+"Homepage" = "https://github.com/Wicks-Analytics/analytics_store"
+"Bug Tracker" = "https://github.com/Wicks-Analytics/analytics_store/issues"
