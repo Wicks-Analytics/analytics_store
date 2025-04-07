@@ -1144,3 +1144,135 @@ class DataAnalyser:
         
         plt.tight_layout()
         plt.show()
+
+    def plot_actual_vs_expected_by_factor(self, actual_column: str, predicted_column: str, factor_column: str,
+                                        exposure_column: Optional[str] = None, title: Optional[str] = None, 
+                                        figsize: Optional[Tuple[int, int]] = None, max_categories: int = 6) -> None:
+        """
+        Create an actual vs expected scatter plot split by a categorical factor.
+        
+        Args:
+            actual_column: Name of the column containing actual values
+            predicted_column: Name of the column containing predicted values
+            factor_column: Name of the column containing the categorical factor to split by
+            exposure_column: Optional column to show as bar chart on secondary y-axis
+            title: Optional title for the plot
+            figsize: Optional tuple of (width, height) for the plot. If None, size will be determined by number of subplots
+            max_categories: Maximum number of categories to plot. If exceeded, only the top categories by frequency will be shown
+            
+        Raises:
+            ValueError: If columns don't exist or contain invalid data
+        """
+        if self.data is None:
+            raise ValueError("No data loaded")
+            
+        required_cols = [actual_column, predicted_column, factor_column]
+        if exposure_column is not None:
+            required_cols.append(exposure_column)
+            
+        for col in required_cols:
+            if col not in self.data.columns:
+                raise ValueError(f"Column '{col}' not found in data")
+        
+        # Get data and drop nulls
+        select_cols = [
+            pl.col(actual_column).alias('actual'),
+            pl.col(predicted_column).alias('predicted'),
+            pl.col(factor_column).alias('factor')
+        ]
+        if exposure_column is not None:
+            select_cols.append(pl.col(exposure_column).alias('exposure'))
+            
+        df = self.data.select(select_cols).drop_nulls()
+        
+        # Get unique factors and their counts
+        factor_counts = df.groupby('factor').count()
+        unique_factors = factor_counts.sort('count', descending=True).select('factor').to_series().to_list()
+        
+        if len(unique_factors) > max_categories:
+            unique_factors = unique_factors[:max_categories]
+            df = df.filter(pl.col('factor').is_in(unique_factors))
+        
+        n_factors = len(unique_factors)
+        
+        # Calculate number of rows and columns for subplots
+        n_cols = min(3, n_factors)
+        n_rows = (n_factors + n_cols - 1) // n_cols
+        
+        # Set figsize if not provided
+        if figsize is None:
+            figsize = (5 * n_cols, 4 * n_rows)
+        
+        # Create figure and subplots
+        plt.style.use('default')
+        sns.set_theme()
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
+        if n_factors == 1:
+            axes = np.array([axes])
+        axes = axes.flatten()
+        
+        # Plot each factor
+        for i, factor in enumerate(unique_factors):
+            factor_data = df.filter(pl.col('factor') == factor)
+            actual = factor_data.select('actual').to_numpy().flatten()
+            predicted = factor_data.select('predicted').to_numpy().flatten()
+            
+            ax = axes[i]
+            scatter = ax.scatter(predicted, actual, alpha=0.5)
+            
+            # Add diagonal line
+            min_val = min(actual.min(), predicted.min())
+            max_val = max(actual.max(), predicted.max())
+            ax.plot([min_val, max_val], [min_val, max_val], 'r--', lw=2)
+            
+            # Add exposure bars if exposure column provided
+            if exposure_column is not None:
+                ax2 = ax.twinx()
+                exposure = factor_data.select('exposure').to_numpy().flatten()
+                
+                # Create bins for the exposure bars
+                n_bins = 20
+                bin_edges = np.linspace(predicted.min(), predicted.max(), n_bins + 1)
+                bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+                
+                # Calculate mean exposure per bin
+                exposure_means = []
+                for j in range(len(bin_edges) - 1):
+                    mask = (predicted >= bin_edges[j]) & (predicted < bin_edges[j + 1])
+                    if mask.any():
+                        exposure_means.append(exposure[mask].mean())
+                    else:
+                        exposure_means.append(0)
+                
+                # Plot exposure bars
+                bars = ax2.bar(bin_centers, exposure_means, width=(bin_edges[1] - bin_edges[0]),
+                             alpha=0.3, color='gray')
+                ax2.set_ylabel(exposure_column, color='gray')
+                ax2.tick_params(axis='y', labelcolor='gray')
+            
+            # Calculate metrics for this factor
+            metrics = self.calculate_regression_metrics(actual_column, predicted_column, 
+                                                     filter_expr=pl.col(factor_column) == factor)
+            
+            # Add text box with metrics
+            textstr = (f'N: {len(actual):,}\n'
+                      f'R²: {metrics.r2:.3f}\n'
+                      f'RMSE: {metrics.rmse:.2f}')
+            props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+            ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=10,
+                   verticalalignment='top', bbox=props)
+            
+            ax.set_xlabel('Predicted Values')
+            ax.set_ylabel('Actual Values')
+            ax.set_title(f'{factor}')
+            ax.grid(True, alpha=0.3)
+        
+        # Remove any unused subplots
+        for i in range(n_factors, len(axes)):
+            fig.delaxes(axes[i])
+        
+        if title:
+            fig.suptitle(title, y=1.02)
+        
+        plt.tight_layout()
+        plt.show()
