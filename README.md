@@ -31,7 +31,7 @@ A powerful Python package for data analysis and model evaluation using Polars. B
 ## Installation
 
 ```bash
-pip install https://github.com/Wicks-Analytics/analytics_store
+pip install git+https://github.com/Wicks-Analytics/analytics_store
 ```
 
 ## Quick Start

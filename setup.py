@@ -16,7 +16,7 @@ setup(
     description="A Python package for data analysis and analytics using Polars",
     python_requires=">=3.8",
     license="MIT",
-    url="https://github.com/wicks-analytics/analytics_store",
+    url="https://github.com/Wicks-Analytics/analytics_store",
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",
