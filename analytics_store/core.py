@@ -1186,7 +1186,7 @@ class DataAnalyser:
         df = self.data.select(select_cols).drop_nulls()
         
         # Get unique factors and their counts
-        factor_counts = df.groupby('factor').count()
+        factor_counts = df.group_by('factor').count()
         unique_factors = factor_counts.sort('count', descending=True).select('factor').to_series().to_list()
         
         if len(unique_factors) > max_categories:
