@@ -175,13 +175,26 @@ analyzer.plot_actual_vs_expected_by_factor(
 )
 ```
 
-The `plot_actual_vs_expected_by_factor` function creates a grid of actual vs predicted plots split by a categorical factor. Each subplot includes:
-- Scatter plot of actual vs predicted values
-- Perfect prediction line (diagonal)
+The `plot_actual_vs_expected_by_factor` function creates a plot comparing actual and predicted values across different factor levels. Each factor level shows:
+- Mean actual and predicted values as points
+- Connecting lines between actual and predicted points
 - Bar chart showing either:
-  - Sum of exposure values per predicted value bin (if exposure_column specified)
-  - Count of observations per predicted value bin (if no exposure_column)
-- Key metrics (N, R², RMSE) for each factor level
+  - Sum of exposure values (if exposure_column specified)
+  - Count of observations (if no exposure_column)
+- Overall metrics (N, R², RMSE)
+
+For numeric factors with more than 20 unique values, the function automatically bins the data into 20 equal-width bins for better visualization.
+
+```python
+# Analyze model performance by factor
+analyzer.plot_actual_vs_expected_by_factor(
+    actual_column="actual_values",
+    predicted_column="predicted_values",
+    factor_column="segment",  # Categorical variable or numeric factor
+    exposure_column="exposure",  # Optional exposure/weight column
+    title="Model Performance by Segment"
+)
+```
 
 ## Contributing
 

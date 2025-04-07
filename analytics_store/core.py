@@ -1147,18 +1147,17 @@ class DataAnalyser:
 
     def plot_actual_vs_expected_by_factor(self, actual_column: str, predicted_column: str, factor_column: str,
                                         exposure_column: Optional[str] = None, title: Optional[str] = None, 
-                                        figsize: Optional[Tuple[int, int]] = None, max_categories: int = 6) -> None:
+                                        figsize: Optional[Tuple[int, int]] = None) -> None:
         """
-        Create an actual vs expected scatter plot split by a categorical factor.
+        Create an actual vs expected plot grouped by a factor on the x-axis.
         
         Args:
             actual_column: Name of the column containing actual values
             predicted_column: Name of the column containing predicted values
-            factor_column: Name of the column containing the categorical factor to split by
+            factor_column: Name of the column containing the categorical factor to group by (x-axis)
             exposure_column: Optional column to show as bar chart on secondary y-axis
             title: Optional title for the plot
-            figsize: Optional tuple of (width, height) for the plot. If None, size will be determined by number of subplots
-            max_categories: Maximum number of categories to plot. If exceeded, only the top categories by frequency will be shown
+            figsize: Optional tuple of (width, height) for the plot
             
         Raises:
             ValueError: If columns don't exist or contain invalid data
@@ -1185,102 +1184,121 @@ class DataAnalyser:
             
         df = self.data.select(select_cols).drop_nulls()
         
-        # Get unique factors and their counts
-        factor_counts = df.group_by('factor').count()
-        unique_factors = factor_counts.sort('count', descending=True).select('factor').to_series().to_list()
+        # Check if factor is numeric and needs binning
+        is_numeric = df.select(pl.col('factor')).dtypes[0] in [pl.Float64, pl.Float32, pl.Int64, pl.Int32, pl.Int16, pl.Int8]
+        unique_factors = df.select('factor').unique().height
+        needs_binning = is_numeric and unique_factors > 20
         
-        if len(unique_factors) > max_categories:
-            unique_factors = unique_factors[:max_categories]
-            df = df.filter(pl.col('factor').is_in(unique_factors))
-        
-        n_factors = len(unique_factors)
-        
-        # Calculate number of rows and columns for subplots
-        n_cols = min(3, n_factors)
-        n_rows = (n_factors + n_cols - 1) // n_cols
-        
-        # Set figsize if not provided
-        if figsize is None:
-            figsize = (5 * n_cols, 4 * n_rows)
-        
-        # Create figure and subplots
-        plt.style.use('default')
-        sns.set_theme()
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
-        if n_factors == 1:
-            axes = np.array([axes])
-        axes = axes.flatten()
-        
-        # Plot each factor
-        for i, factor in enumerate(unique_factors):
-            factor_data = df.filter(pl.col('factor') == factor)
-            actual = factor_data.select('actual').to_numpy().flatten()
-            predicted = factor_data.select('predicted').to_numpy().flatten()
-            
-            ax = axes[i]
-            scatter = ax.scatter(predicted, actual, alpha=0.5)
-            
-            # Add diagonal line
-            min_val = min(actual.min(), predicted.min())
-            max_val = max(actual.max(), predicted.max())
-            ax.plot([min_val, max_val], [min_val, max_val], 'r--', lw=2)
-            
-            # Add exposure/count bars
-            ax2 = ax.twinx()
-            
-            # Create bins for the bars
-            n_bins = 20
-            bin_edges = np.linspace(predicted.min(), predicted.max(), n_bins + 1)
+        if needs_binning:
+            # Create bins for numeric factors
+            factor_min = df.select(pl.col('factor').min()).item()
+            factor_max = df.select(pl.col('factor').max()).item()
+            bin_edges = np.linspace(factor_min, factor_max, 21)  # 20 bins + 1 edge
             bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
             
-            # Calculate sum of exposure or count per bin
-            bin_values = []
-            for j in range(len(bin_edges) - 1):
-                mask = (predicted >= bin_edges[j]) & (predicted < bin_edges[j + 1])
-                if mask.any():
-                    if exposure_column is not None:
-                        exposure = factor_data.select('exposure').to_numpy().flatten()
-                        bin_values.append(exposure[mask].sum())
-                    else:
-                        bin_values.append(mask.sum())
-                else:
-                    bin_values.append(0)
+            # Add bin column
+            df = df.with_columns([
+                pl.col('factor')
+                .map_ranges(bin_edges, range(20))
+                .cast(pl.Int64)
+                .alias('factor_bin')
+            ])
             
-            # Plot bars
-            bars = ax2.bar(bin_centers, bin_values, width=(bin_edges[1] - bin_edges[0]),
-                         alpha=0.3, color='gray')
+            # Calculate statistics by bin
+            agg_exprs = [
+                pl.col('actual').mean().alias('actual_mean'),
+                pl.col('predicted').mean().alias('predicted_mean'),
+                pl.col('actual').count().alias('count')
+            ]
             if exposure_column is not None:
-                ax2.set_ylabel(f'Sum of {exposure_column}', color='gray')
-            else:
-                ax2.set_ylabel('Count', color='gray')
-            ax2.tick_params(axis='y', labelcolor='gray')
+                agg_exprs.append(pl.col('exposure').sum().alias('exposure_sum'))
+                
+            stats = df.group_by('factor_bin').agg(agg_exprs).sort('factor_bin')
             
-            # Format y-axis with comma separator for large numbers
-            ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
-            
-            # Calculate metrics for this factor
-            metrics = self.calculate_regression_metrics(actual_column, predicted_column, 
-                                                     filter_expr=pl.col(factor_column) == factor)
-            
-            # Add text box with metrics
-            textstr = (f'N: {len(actual):,}\n'
-                      f'R²: {metrics.r2:.3f}\n'
-                      f'RMSE: {metrics.rmse:.2f}')
-            props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
-            ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=10,
-                   verticalalignment='top', bbox=props)
-            
-            ax.set_xlabel('Predicted Values')
-            ax.set_ylabel('Actual Values')
-            ax.set_title(f'{factor}')
-            ax.grid(True, alpha=0.3)
+            # Replace factor values with bin centers for display
+            x_labels = [f'{bin_edges[i]:.1f} - {bin_edges[i+1]:.1f}' for i in range(len(bin_edges)-1)]
+        else:
+            # Calculate statistics by original factor
+            agg_exprs = [
+                pl.col('actual').mean().alias('actual_mean'),
+                pl.col('predicted').mean().alias('predicted_mean'),
+                pl.col('actual').count().alias('count')
+            ]
+            if exposure_column is not None:
+                agg_exprs.append(pl.col('exposure').sum().alias('exposure_sum'))
+                
+            stats = df.group_by('factor').agg(agg_exprs).sort('factor')
+            x_labels = stats.select('factor').to_numpy().flatten()
         
-        # Remove any unused subplots
-        for i in range(n_factors, len(axes)):
-            fig.delaxes(axes[i])
+        # Set up the plot
+        if figsize is None:
+            figsize = (12, 6)
+            
+        plt.style.use('default')
+        sns.set_theme()
+        fig, ax = plt.subplots(figsize=figsize)
         
+        # Get x positions for bars and points
+        x = np.arange(len(stats))
+        
+        # Plot actual and predicted means as points with error bars
+        ax.scatter(x - 0.15, stats.select('actual_mean').to_numpy().flatten(), 
+                  color='blue', alpha=0.7, label='Actual')
+        ax.scatter(x + 0.15, stats.select('predicted_mean').to_numpy().flatten(), 
+                  color='red', alpha=0.7, label='Predicted')
+        
+        # Add connecting lines between actual and predicted for each factor
+        for i in range(len(x)):
+            ax.plot([x[i] - 0.15, x[i] + 0.15], 
+                   [stats.select('actual_mean').to_numpy().flatten()[i],
+                    stats.select('predicted_mean').to_numpy().flatten()[i]],
+                   color='gray', alpha=0.3, linestyle='--')
+        
+        # Add exposure/count bars on secondary axis
+        ax2 = ax.twinx()
+        if exposure_column is not None:
+            bars = ax2.bar(x, stats.select('exposure_sum').to_numpy().flatten(),
+                         alpha=0.2, color='gray', label=exposure_column)
+            ax2.set_ylabel(f'Sum of {exposure_column}', color='gray')
+        else:
+            bars = ax2.bar(x, stats.select('count').to_numpy().flatten(),
+                         alpha=0.2, color='gray', label='Count')
+            ax2.set_ylabel('Count', color='gray')
+        
+        ax2.tick_params(axis='y', labelcolor='gray')
+        ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
+        
+        # Calculate overall metrics
+        metrics = self.calculate_regression_metrics(actual_column, predicted_column)
+        
+        # Add text box with overall metrics
+        textstr = (f'Overall Metrics:\n'
+                  f'N: {metrics.n_samples:,}\n'
+                  f'R²: {metrics.r2:.3f}\n'
+                  f'RMSE: {metrics.rmse:.2f}')
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+        ax.text(1.02, 0.95, textstr, transform=ax.transAxes, fontsize=10,
+               verticalalignment='top', bbox=props)
+        
+        # Customize plot
+        ax.set_xlabel(factor_column)
+        ax.set_ylabel('Value')
         if title:
-            fig.suptitle(title, y=1.02)
+            plt.title(title)
+            
+        # Set x-axis ticks
+        ax.set_xticks(x)
+        if needs_binning:
+            ax.set_xticklabels(x_labels, rotation=45, ha='right')
+            ax.set_xlabel(f'{factor_column} (binned)')
+        else:
+            ax.set_xticklabels(x_labels, rotation=45, ha='right')
+            ax.set_xlabel(factor_column)
+        
+        # Add legend
+        lines1, labels1 = ax.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
         
         plt.tight_layout()
         plt.show()
