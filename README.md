@@ -164,7 +164,24 @@ analyzer.plot_regression_diagnostics(
     predicted_column="predicted_values",
     title="Regression Model Diagnostics"
 )
+
+# Analyze model performance by factor
+analyzer.plot_actual_vs_expected_by_factor(
+    actual_column="actual_values",
+    predicted_column="predicted_values",
+    factor_column="segment",  # Categorical variable to split by
+    exposure_column="exposure",  # Optional exposure/weight column
+    title="Model Performance by Segment"
+)
 ```
+
+The `plot_actual_vs_expected_by_factor` function creates a grid of actual vs predicted plots split by a categorical factor. Each subplot includes:
+- Scatter plot of actual vs predicted values
+- Perfect prediction line (diagonal)
+- Bar chart showing either:
+  - Sum of exposure values per predicted value bin (if exposure_column specified)
+  - Count of observations per predicted value bin (if no exposure_column)
+- Key metrics (N, R², RMSE) for each factor level
 
 ## Contributing
 
