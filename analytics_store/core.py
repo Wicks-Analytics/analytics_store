@@ -1225,30 +1225,38 @@ class DataAnalyser:
             max_val = max(actual.max(), predicted.max())
             ax.plot([min_val, max_val], [min_val, max_val], 'r--', lw=2)
             
-            # Add exposure bars if exposure column provided
-            if exposure_column is not None:
-                ax2 = ax.twinx()
-                exposure = factor_data.select('exposure').to_numpy().flatten()
-                
-                # Create bins for the exposure bars
-                n_bins = 20
-                bin_edges = np.linspace(predicted.min(), predicted.max(), n_bins + 1)
-                bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-                
-                # Calculate mean exposure per bin
-                exposure_means = []
-                for j in range(len(bin_edges) - 1):
-                    mask = (predicted >= bin_edges[j]) & (predicted < bin_edges[j + 1])
-                    if mask.any():
-                        exposure_means.append(exposure[mask].mean())
+            # Add exposure/count bars
+            ax2 = ax.twinx()
+            
+            # Create bins for the bars
+            n_bins = 20
+            bin_edges = np.linspace(predicted.min(), predicted.max(), n_bins + 1)
+            bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+            
+            # Calculate sum of exposure or count per bin
+            bin_values = []
+            for j in range(len(bin_edges) - 1):
+                mask = (predicted >= bin_edges[j]) & (predicted < bin_edges[j + 1])
+                if mask.any():
+                    if exposure_column is not None:
+                        exposure = factor_data.select('exposure').to_numpy().flatten()
+                        bin_values.append(exposure[mask].sum())
                     else:
-                        exposure_means.append(0)
-                
-                # Plot exposure bars
-                bars = ax2.bar(bin_centers, exposure_means, width=(bin_edges[1] - bin_edges[0]),
-                             alpha=0.3, color='gray')
-                ax2.set_ylabel(exposure_column, color='gray')
-                ax2.tick_params(axis='y', labelcolor='gray')
+                        bin_values.append(mask.sum())
+                else:
+                    bin_values.append(0)
+            
+            # Plot bars
+            bars = ax2.bar(bin_centers, bin_values, width=(bin_edges[1] - bin_edges[0]),
+                         alpha=0.3, color='gray')
+            if exposure_column is not None:
+                ax2.set_ylabel(f'Sum of {exposure_column}', color='gray')
+            else:
+                ax2.set_ylabel('Count', color='gray')
+            ax2.tick_params(axis='y', labelcolor='gray')
+            
+            # Format y-axis with comma separator for large numbers
+            ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
             
             # Calculate metrics for this factor
             metrics = self.calculate_regression_metrics(actual_column, predicted_column, 
