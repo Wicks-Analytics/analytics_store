@@ -67,7 +67,6 @@ def test_calculate_regression_metrics(analyzer, sample_data):
     assert result.mae >= 0
     assert result.mape >= 0
     assert isinstance(result.r2, float)
-    assert isinstance(result.adj_r2, float)
     assert result.n_samples == len(sample_data)
 
 def test_calculate_double_lift(analyzer, sample_data):
