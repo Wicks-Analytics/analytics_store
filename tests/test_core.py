@@ -40,10 +40,12 @@ def test_calculate_lift_curve(analyzer, sample_data):
     result = analyzer.calculate_lift_curve('target', 'score')
     
     assert result.baseline > 0
-    assert result.auc_lift > 0
+    assert result.auc_score_lift > 0
     assert len(result.percentiles) > 0
-    assert len(result.lift_values) == len(result.percentiles)
-    assert len(result.cumulative_lift) == len(result.percentiles)
+    assert len(result.score_lift_values) == len(result.percentiles)
+    assert len(result.score_cumulative_lift) == len(result.percentiles)
+    assert len(result.target_lift_values) == len(result.percentiles)
+    assert len(result.target_cumulative_lift) == len(result.percentiles)
 
 def test_calculate_roc_curve(analyzer, sample_data):
     """Test ROC curve calculation."""
@@ -60,9 +62,12 @@ def test_calculate_regression_metrics(analyzer, sample_data):
     analyzer.load_data(sample_data)
     result = analyzer.calculate_regression_metrics('target', 'score')
     
+    assert result.mse >= 0
     assert result.rmse >= 0
     assert result.mae >= 0
+    assert result.mape >= 0
     assert isinstance(result.r2, float)
+    assert isinstance(result.adj_r2, float)
     assert result.n_samples == len(sample_data)
 
 def test_calculate_double_lift(analyzer, sample_data):
