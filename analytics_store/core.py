@@ -25,6 +25,7 @@ class LiftResult:
     target_lift_values: np.ndarray
     score_cumulative_lift: np.ndarray
     target_cumulative_lift: np.ndarray
+    baseline: float
     auc_score_lift: float
     auc_target_lift: float
     
