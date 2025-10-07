@@ -1,10 +1,13 @@
+from cProfile import label
 import polars as pl
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from typing import Optional, Union, List, Tuple, Dict
+from typing import Optional, Union, List, Tuple, Dict, Any
 from dataclasses import dataclass
-from sklearn.metrics import auc, roc_curve, mean_squared_error, mean_absolute_error, r2_score
+from sklearn.metrics import (auc, roc_curve, mean_squared_error, mean_absolute_error, mean_absolute_percentage_error, r2_score, 
+                         precision_score, recall_score, f1_score, accuracy_score, confusion_matrix,
+                         precision_recall_curve)
 
 @dataclass
 class BootstrapResult:
@@ -18,10 +21,12 @@ class BootstrapResult:
 class LiftResult:
     """Container for lift curve results."""
     percentiles: np.ndarray
-    lift_values: np.ndarray
-    cumulative_lift: np.ndarray
-    baseline: float
-    auc_lift: float
+    score_lift_values: np.ndarray
+    target_lift_values: np.ndarray
+    score_cumulative_lift: np.ndarray
+    target_cumulative_lift: np.ndarray
+    auc_score_lift: float
+    auc_target_lift: float
     
 @dataclass
 class ROCResult:
@@ -36,8 +41,10 @@ class ROCResult:
 @dataclass
 class RegressionMetrics:
     """Container for regression metrics."""
+    mse: float  # Mean Square Error
     rmse: float  # Root Mean Square Error
     mae: float   # Mean Absolute Error
+    mape: float   # Mean Absolute Percentage Error
     r2: float    # R-squared score
     adj_r2: float  # Adjusted R-squared
     n_samples: int  # Number of samples
@@ -52,11 +59,73 @@ class DoubleLiftResult:
     joint_lift: float
     conditional_lift: float
 
+@dataclass
+class BinaryClassificationMetrics:
+    """Container for binary classification metrics."""
+    accuracy: float
+    precision: float
+    recall: float
+    f1_score: float
+    confusion_matrix: np.ndarray
+    true_positives: int
+    false_positives: int
+    true_negatives: int
+    false_negatives: int
+    specificity: float
+    npv: float  # Negative Predictive Value
+    pr_auc: Optional[float] = None  # Precision-Recall AUC (only for probability inputs)
+    roc_auc: Optional[float] = None  # ROC AUC (only for probability inputs)
+
+@dataclass
+class PopulationTestResult:
+    """Container for population comparison test results."""
+    statistic: float
+    p_value: float
+    effect_size: float
+    test_type: str
+    is_significant: bool
+    confidence_interval: Optional[Tuple[float, float]] = None
+
 class DataAnalyser:
     """Main class for data analysis operations using Polars."""
     
     def __init__(self):
         self.data = None
+        
+    def __getattr__(self, name: str) -> Any:
+        """
+        Forward any unknown attribute/method calls to the underlying Polars DataFrame.
+        This allows using Polars methods directly on the DataAnalyser instance.
+        
+        Args:
+            name: Name of the attribute/method to access
+            
+        Returns:
+            The result of the method call on the underlying DataFrame
+            
+        Raises:
+            ValueError: If no data is loaded
+            AttributeError: If the method doesn't exist in Polars DataFrame
+        """
+        if self.data is None:
+            raise ValueError("No data loaded")
+            
+        if hasattr(self.data, name):
+            attr = getattr(self.data, name)
+            if callable(attr):
+                # If it's a method, return a wrapper that maintains method chaining
+                def wrapper(*args, **kwargs):
+                    result = attr(*args, **kwargs)
+                    if isinstance(result, pl.DataFrame):
+                        # If result is a DataFrame, wrap it in a new DataAnalyser
+                        new_analyser = DataAnalyser()
+                        new_analyser.data = result
+                        return new_analyser
+                    return result
+                return wrapper
+            return attr
+            
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
         
     def load_data(self, data: Union[str, pl.DataFrame]) -> None:
         """
@@ -185,7 +254,7 @@ class DataAnalyser:
             raise ValueError(f"Column '{column}' must contain numeric data") from e
 
     def plot_lorenz_curve(self, column: str, exposure_column: Optional[str] = None, 
-                         title: Optional[str] = None, figsize: Tuple[int, int] = (10, 6)) -> None:
+                         title: Optional[str] = None, figsize: Tuple[int, int] = (10, 6)) -> plt.Figure:
         """
         Plot the Lorenz curve for a given column.
         
@@ -231,7 +300,7 @@ class DataAnalyser:
                 verticalalignment='top', bbox=props)
         
         plt.tight_layout()
-        plt.show()
+        return fig
 
     def calculate_gini(self, column: str, exposure_column: Optional[str] = None) -> float:
         """
@@ -359,7 +428,7 @@ class DataAnalyser:
     def plot_lorenz_curve_with_ci(self, column: str, exposure_column: Optional[str] = None,
                                  n_iterations: int = 1000, confidence_level: float = 0.95,
                                  title: Optional[str] = None, figsize: Tuple[int, int] = (10, 6),
-                                 random_seed: Optional[int] = None) -> None:
+                                 random_seed: Optional[int] = None) -> plt.Figure:
         """
         Plot the Lorenz curve with bootstrap confidence intervals.
         
@@ -477,7 +546,7 @@ class DataAnalyser:
                 verticalalignment='top', bbox=props)
         
         plt.tight_layout()
-        plt.show()
+        return fig
 
     def calculate_lift_curve(self, target_column: str, score_column: str, 
                            n_bins: int = 10) -> LiftResult:
@@ -529,40 +598,51 @@ class DataAnalyser:
             
         # Sort by scores in descending order
         sort_idx = np.argsort(scores)[::-1]
-        sorted_targets = targets[sort_idx]
+        sorted_targets = targets[sort_idx]        
+        sorted_scores = scores[sort_idx]
         
         # Calculate points for the lift curve
         n_samples = len(sorted_targets)
         step_size = n_samples // n_bins
         
         percentiles = np.linspace(0, 100, n_bins + 1)[1:]  # exclude 0
-        lift_values = np.zeros(n_bins)
-        cumulative_lift = np.zeros(n_bins)
+        score_lift_values = np.zeros(n_bins)
+        target_lift_values = np.zeros(n_bins)
+        score_cumulative_lift = np.zeros(n_bins)
+        target_cumulative_lift = np.zeros(n_bins)
         
         for i in range(n_bins):
             # Calculate lift for this bin
             bin_start = i * step_size
             bin_end = (i + 1) * step_size if i < n_bins - 1 else n_samples
-            bin_mean = np.mean(sorted_targets[bin_start:bin_end])
-            lift_values[i] = bin_mean / baseline
+            bin_mean_score = np.mean(sorted_scores[bin_start:bin_end])
+            bin_mean_target = np.mean(sorted_targets[bin_start:bin_end])
+            score_lift_values[i] = bin_mean_score / baseline
+            target_lift_values[i] = bin_mean_target / baseline
             
             # Calculate cumulative lift up to this point
-            cumulative_mean = np.mean(sorted_targets[:bin_end])
-            cumulative_lift[i] = cumulative_mean / baseline
+            cumulative_mean_score = np.mean(sorted_scores[:bin_end])
+            cumulative_mean_target = np.mean(sorted_targets[:bin_end])
+            score_cumulative_lift[i] = cumulative_mean_score / baseline
+            target_cumulative_lift[i] = cumulative_mean_target / baseline
         
         # Calculate area under the lift curve
-        auc_lift = auc([0] + list(percentiles/100), [1] + list(cumulative_lift))
+        auc_score_lift = auc([0] + list(percentiles/100), [1] + list(score_cumulative_lift))
+        auc_target_lift = auc([0] + list(percentiles/100), [1] + list(target_cumulative_lift))
         
         return LiftResult(
             percentiles=percentiles,
-            lift_values=lift_values,
-            cumulative_lift=cumulative_lift,
+            score_lift_values=score_lift_values,
+            target_lift_values=target_lift_values,
+            score_cumulative_lift=score_cumulative_lift,
+            target_cumulative_lift=target_cumulative_lift,
             baseline=baseline,
-            auc_lift=auc_lift
+            auc_score_lift=auc_score_lift,
+            auc_target_lift=auc_target_lift
         )
     
     def plot_lift_curve(self, target_column: str, score_column: str, n_bins: int = 10,
-                       title: Optional[str] = None, figsize: Tuple[int, int] = (12, 6)) -> None:
+                       title: Optional[str] = None, figsize: Tuple[int, int] = (12, 6)) -> plt.Figure:
         """
         Plot lift curve showing both point-wise and cumulative lift.
         
@@ -584,7 +664,8 @@ class DataAnalyser:
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
         
         # Plot point-wise lift
-        ax1.plot(lift_result.percentiles, lift_result.lift_values, 'b-', marker='o')
+        ax1.plot(lift_result.percentiles, lift_result.score_lift_values, 'red', marker='o', label='Predicted')
+        ax1.plot(lift_result.percentiles, lift_result.target_lift_values, 'blue', marker='o', label='Actual')
         ax1.axhline(y=1, color='r', linestyle='--', label='Baseline')
         ax1.set_xlabel('Percentile')
         ax1.set_ylabel('Lift')
@@ -593,7 +674,8 @@ class DataAnalyser:
         ax1.legend()
         
         # Plot cumulative lift
-        ax2.plot(lift_result.percentiles, lift_result.cumulative_lift, 'g-', marker='o')
+        ax2.plot(lift_result.percentiles, lift_result.score_cumulative_lift, 'red', marker='o', label='Predicted')
+        ax2.plot(lift_result.percentiles, lift_result.target_cumulative_lift, 'blue', marker='o', label='Actual')
         ax2.axhline(y=1, color='r', linestyle='--', label='Baseline')
         ax2.set_xlabel('Percentile')
         ax2.set_ylabel('Cumulative Lift')
@@ -607,13 +689,13 @@ class DataAnalyser:
             
         # Add text box with metrics
         textstr = (f'Baseline: {lift_result.baseline:.3f}\n'
-                  f'AUC Lift: {lift_result.auc_lift:.3f}')
+                  f'AUC Lift: {lift_result.auc_score_lift:.3f}')
         props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
         fig.text(0.02, 0.98, textstr, transform=fig.transFigure, fontsize=10,
                 verticalalignment='top', bbox=props)
         
         plt.tight_layout()
-        plt.show()
+        return fig
 
     def calculate_roc_curve(self, target_column: str, score_column: str) -> ROCResult:
         """
@@ -756,7 +838,7 @@ class DataAnalyser:
                       with_ci: bool = True, n_iterations: int = 1000,
                       confidence_level: float = 0.95, title: Optional[str] = None,
                       figsize: Tuple[int, int] = (10, 8),
-                      random_seed: Optional[int] = None) -> None:
+                      random_seed: Optional[int] = None) -> plt.Figure:
         """
         Plot ROC curve optionally with bootstrap confidence intervals.
         
@@ -825,7 +907,7 @@ class DataAnalyser:
                 verticalalignment='top', bbox=props)
         
         plt.tight_layout()
-        plt.show()
+        return fig
 
     def calculate_double_lift(self, target_column: str, score1_column: str, 
                             score2_column: str, n_bins: int = 10) -> DoubleLiftResult:
@@ -909,7 +991,7 @@ class DataAnalyser:
     
     def plot_double_lift(self, target_column: str, score1_column: str, score2_column: str,
                         n_bins: int = 10, title: Optional[str] = None, 
-                        figsize: Tuple[int, int] = (15, 5)) -> None:
+                        figsize: Tuple[int, int] = (15, 5)) -> plt.Figure:
         """
         Create a double lift plot comparing two scoring variables.
         
@@ -985,7 +1067,7 @@ class DataAnalyser:
             fig.suptitle(title, y=1.05)
         
         plt.tight_layout()
-        plt.show()
+        return fig
 
     def calculate_regression_metrics(self, actual_column: str, predicted_column: str,
                                    n_features: Optional[int] = None) -> RegressionMetrics:
@@ -1031,6 +1113,7 @@ class DataAnalyser:
         mse = mean_squared_error(y_true, y_pred)
         rmse = np.sqrt(mse)
         mae = mean_absolute_error(y_true, y_pred)
+        mape = mean_absolute_percentage_error(y_true, y_pred)
         r2 = r2_score(y_true, y_pred)
         
         n_samples = len(y_true)
@@ -1042,8 +1125,10 @@ class DataAnalyser:
             adj_r2 = None
             
         return RegressionMetrics(
+            mse=mse,
             rmse=rmse,
             mae=mae,
+            mape=mape,
             r2=r2,
             adj_r2=adj_r2,
             n_samples=n_samples,
@@ -1051,7 +1136,7 @@ class DataAnalyser:
         )
     
     def plot_regression_diagnostics(self, actual_column: str, predicted_column: str,
-                                  title: Optional[str] = None, figsize: Tuple[int, int] = (12, 8)) -> None:
+                                  title: Optional[str] = None, figsize: Tuple[int, int] = (12, 8)) -> plt.Figure:
         """
         Create a comprehensive set of regression diagnostic plots.
         
@@ -1066,9 +1151,12 @@ class DataAnalyser:
             predicted_column: Name of the column containing predicted values
             title: Optional title for the plot
             figsize: Tuple of (width, height) for the plot
-            
+        
+        Returns:
+            matplotlib.figure.Figure: The created figure
+        
         Raises:
-            ValueError: If columns don't exist or contain invalid data
+            ValueError: If columns don't exist or contain non-numeric data
         """
         if self.data is None:
             raise ValueError("No data loaded")
@@ -1143,11 +1231,12 @@ class DataAnalyser:
                 verticalalignment='top', bbox=props)
         
         plt.tight_layout()
-        plt.show()
+        return fig
 
     def plot_actual_vs_expected_by_factor(self, actual_column: str, predicted_column: str, factor_column: str,
                                         exposure_column: Optional[str] = None, title: Optional[str] = None, 
-                                        figsize: Optional[Tuple[int, int]] = None) -> None:
+                                        figsize: Optional[Tuple[int, int]] = None,
+                                        n_bins: [int] = 20) -> plt.Figure:
         """
         Create an actual vs expected plot grouped by a factor on the x-axis.
         
@@ -1158,6 +1247,7 @@ class DataAnalyser:
             exposure_column: Optional column to show as bar chart on secondary y-axis
             title: Optional title for the plot
             figsize: Optional tuple of (width, height) for the plot
+            n_bins: Optional number of bins to split numeric factor columns into
             
         Raises:
             ValueError: If columns don't exist or contain invalid data
@@ -1187,20 +1277,22 @@ class DataAnalyser:
         # Check if factor is numeric and needs binning
         is_numeric = df.select(pl.col('factor')).dtypes[0] in [pl.Float64, pl.Float32, pl.Int64, pl.Int32, pl.Int16, pl.Int8]
         unique_factors = df.select('factor').unique().height
-        needs_binning = is_numeric and unique_factors > 20
+        needs_binning = is_numeric and unique_factors > n_bins
         
         if needs_binning:
             # Create bins for numeric factors
-            factor_min = df.select(pl.col('factor').min()).item()
-            factor_max = df.select(pl.col('factor').max()).item()
-            bin_edges = np.linspace(factor_min, factor_max, 21)  # 20 bins + 1 edge
-            bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+            quantiles = np.linspace(0, 1, n_bins + 1)  # n_bins + 1 edges for n_bins
             
-            # Add bin column
+            # Get quantile values
+            factor_quantiles = df.select(pl.col('factor').quantile(quantiles)).row(0)
+            
+            # Create labels
+            # bin_labels = [f'{factor_quantiles[i]:.1f} - {factor_quantiles[i+1]:.1f}' for i in range(len(factor_quantiles)-1)]
+            
+            # Add bin column using qcut for equal-sized bins
             df = df.with_columns([
                 pl.col('factor')
-                .map_ranges(bin_edges, range(20))
-                .cast(pl.Int64)
+                .qcut(n_bins, allow_duplicates=True)
                 .alias('factor_bin')
             ])
             
@@ -1215,8 +1307,8 @@ class DataAnalyser:
                 
             stats = df.group_by('factor_bin').agg(agg_exprs).sort('factor_bin')
             
-            # Replace factor values with bin centers for display
-            x_labels = [f'{bin_edges[i]:.1f} - {bin_edges[i+1]:.1f}' for i in range(len(bin_edges)-1)]
+            # Use bin labels directly for x-axis
+            x_labels = bin_labels
         else:
             # Calculate statistics by original factor
             agg_exprs = [
@@ -1242,14 +1334,14 @@ class DataAnalyser:
         x = np.arange(len(stats))
         
         # Plot actual and predicted means as points with error bars
-        ax.scatter(x - 0.15, stats.select('actual_mean').to_numpy().flatten(), 
+        ax.plot(x, stats.select('actual_mean').to_numpy().flatten(), 
                   color='blue', alpha=0.7, label='Actual')
-        ax.scatter(x + 0.15, stats.select('predicted_mean').to_numpy().flatten(), 
+        ax.plot(x, stats.select('predicted_mean').to_numpy().flatten(), 
                   color='red', alpha=0.7, label='Predicted')
         
         # Add connecting lines between actual and predicted for each factor
         for i in range(len(x)):
-            ax.plot([x[i] - 0.15, x[i] + 0.15], 
+            ax.plot([x[i], x[i]], 
                    [stats.select('actual_mean').to_numpy().flatten()[i],
                     stats.select('predicted_mean').to_numpy().flatten()[i]],
                    color='gray', alpha=0.3, linestyle='--')
@@ -1301,4 +1393,314 @@ class DataAnalyser:
         ax.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
         
         plt.tight_layout()
-        plt.show()
+        return fig
+
+    def calculate_classification_metrics(self, true_labels: Union[str, np.ndarray], 
+                                     predicted_labels: Union[str, np.ndarray],
+                                     pos_label: Any = 1,
+                                     threshold: Optional[float] = None,
+                                     probability_input: bool = False) -> BinaryClassificationMetrics:
+        """
+        Calculate comprehensive metrics for binary classification.
+
+        Args:
+            true_labels: Column name containing true labels or numpy array of true labels
+            predicted_labels: Column name containing predicted labels/probabilities or numpy array
+            pos_label: Value to be considered as positive class (default: 1)
+            threshold: Classification threshold for probability inputs (default: 0.5)
+            probability_input: If True, predicted_labels contains probabilities/likelihoods
+
+        Returns:
+            BinaryClassificationMetrics containing various classification metrics
+
+        Raises:
+            ValueError: If columns don't exist or data is invalid
+        """
+        if self.data is not None and isinstance(true_labels, str) and isinstance(predicted_labels, str):
+            if true_labels not in self.data.columns or predicted_labels not in self.data.columns:
+                raise ValueError(f"Columns {true_labels} and/or {predicted_labels} not found in data")
+            y_true = self.data.select(pl.col(true_labels)).drop_nulls().to_numpy().flatten()
+            y_pred = self.data.select(pl.col(predicted_labels)).drop_nulls().to_numpy().flatten()
+        else:
+            y_true = np.asarray(true_labels)
+            y_pred = np.asarray(predicted_labels)
+
+        if y_true.shape != y_pred.shape:
+            raise ValueError("True and predicted labels must have the same shape")
+
+        # Handle probability inputs
+        if probability_input:
+            threshold = 0.5 if threshold is None else threshold
+            # Convert probabilities to binary predictions using threshold
+            y_pred_binary = (y_pred >= threshold).astype(int)
+            
+            # Calculate metrics using thresholded predictions
+            accuracy = accuracy_score(y_true, y_pred_binary)
+            precision = precision_score(y_true, y_pred_binary, pos_label=pos_label)
+            recall = recall_score(y_true, y_pred_binary, pos_label=pos_label)
+            f1 = f1_score(y_true, y_pred_binary, pos_label=pos_label)
+            
+            # Calculate confusion matrix and derived metrics
+            cm = confusion_matrix(y_true, y_pred_binary)
+            tn, fp, fn, tp = cm.ravel()
+            
+            # Calculate additional probability-based metrics
+            precision_curve, recall_curve, _ = precision_recall_curve(y_true, y_pred)
+            pr_auc = auc(recall_curve, precision_curve)
+            fpr, tpr, _ = roc_curve(y_true, y_pred)
+            roc_auc = auc(fpr, tpr)
+        else:
+            # Original binary prediction metrics
+            accuracy = accuracy_score(y_true, y_pred)
+            precision = precision_score(y_true, y_pred, pos_label=pos_label)
+            recall = recall_score(y_true, y_pred, pos_label=pos_label)
+            f1 = f1_score(y_true, y_pred, pos_label=pos_label)
+            
+            # Calculate confusion matrix and derived metrics
+            cm = confusion_matrix(y_true, y_pred)
+            tn, fp, fn, tp = cm.ravel()
+            
+            # Set probability-based metrics to None for binary predictions
+            pr_auc = None
+            roc_auc = None
+
+        # Calculate additional metrics
+        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+        npv = tn / (tn + fn) if (tn + fn) > 0 else 0
+
+        return BinaryClassificationMetrics(
+            accuracy=accuracy,
+            precision=precision,
+            recall=recall,
+            f1_score=f1,
+            confusion_matrix=cm,
+            true_positives=tp,
+            false_positives=fp,
+            true_negatives=tn,
+            false_negatives=fn,
+            specificity=specificity,
+            npv=npv,
+            pr_auc=pr_auc,
+            roc_auc=roc_auc
+        )
+
+    def plot_residual_ratios(self, actual_col: str, predicted_col: str, factor_col: str,
+                            group_col: Optional[str] = None, rebase_means: bool = False,
+                            n_bins: int = 20,
+                            title: Optional[str] = None, figsize: Tuple[int, int] = (12, 6)) -> plt.Figure:
+        """
+        Plot the residual ratio (actual/predicted) by a factor with separate lines for each group.
+        
+        Args:
+            actual_col: Name of the column containing actual values
+            predicted_col: Name of the column containing predicted values
+            factor_col: Name of the column to plot on x-axis
+            group_col: Optional name of the column to use for grouping (different lines)
+            rebase_means: If True, divide each group's ratios by their mean to center them at 1.0
+            title: Optional title for the plot
+            figsize: Tuple of (width, height) for the plot
+            
+        Raises:
+            ValueError: If required columns don't exist or contain invalid data
+        """
+        if self.data is None:
+            raise ValueError("No data loaded")
+            
+        required_cols = [actual_col, predicted_col, factor_col]
+        if group_col is not None:
+            required_cols.append(group_col)
+        if not all(col in self.data.columns for col in required_cols):
+            raise ValueError(f"Missing one or more required columns: {required_cols}")
+            
+        # Select required columns
+        select_cols = [
+            pl.col(actual_col).alias('actual'),
+            pl.col(predicted_col).alias('predicted'),
+            pl.col(factor_col).alias('factor')
+        ]
+        if group_col is not None:
+            select_cols.append(pl.col(group_col).alias('group'))
+        df = self.data.select(select_cols).drop_nulls()
+        
+        # Check if factor is numeric and needs binning
+        is_numeric = df.select(pl.col('factor')).dtypes[0] in [pl.Float64, pl.Float32, pl.Int64, pl.Int32, pl.Int16, pl.Int8]
+        unique_factors = df.select('factor').unique().height
+        needs_binning = is_numeric and unique_factors > n_bins
+        
+        if needs_binning:
+            # Create bins for numeric factors
+            quantiles = np.linspace(0, 1, n_bins + 1)
+                                    
+            # Add bin column using qcut for equal-sized bins
+            df = df.with_columns([
+                pl.col('factor')
+                .qcut(n_bins, allow_duplicates=True)
+                .alias('factor_bin')
+            ])
+            
+            # Use binned factor for plotting
+            plot_factor = 'factor_bin'
+        else:
+            # Use original factor for plotting
+            plot_factor = 'factor'
+            
+        # Calculate ratios
+        df = df.with_columns([
+            (pl.col('actual') / pl.col('predicted')).alias('ratio')
+        ])
+        
+        if rebase_means and group_col is not None:
+            # Calculate mean ratio for each group and divide through
+            group_means = df.group_by('group').agg(
+                pl.col('ratio').mean().alias('group_mean')
+            )
+            df = df.join(group_means, on='group')
+            df = df.with_columns([
+                (pl.col('ratio') / pl.col('group_mean')).alias('ratio')
+            ])
+        
+        # Calculate mean ratios by factor and optionally group
+        group_cols = [plot_factor]
+        if group_col is not None:
+            group_cols.append('group')
+        stats = df.group_by(group_cols).agg([
+            pl.col('ratio').mean().alias('ratio'),
+            pl.col('ratio').count().alias('count')
+        ]).sort(group_cols)
+        
+        # Create the plot
+        fig = plt.figure(figsize=figsize)
+        
+        if group_col is not None:
+            # Get unique groups and assign colors
+            groups = stats.select('group').unique().to_series().to_list()
+            colors = plt.cm.tab10(np.linspace(0, 1, len(groups)))
+            
+            for group, color in zip(groups, colors):
+                group_data = stats.filter(pl.col('group') == group)
+                x_vals = group_data.select(plot_factor).to_series().to_list()
+                y_vals = group_data.select('ratio').to_series().to_list()
+                counts = group_data.select('count').to_series().to_list()
+                
+                # Scale line widths based on counts
+                min_count = min(counts)
+                max_count = max(counts)
+                widths = [1 + 3 * (c - min_count) / (max_count - min_count) if max_count > min_count else 2 for c in counts]
+                
+                plt.plot(x_vals, y_vals, '-o', label=str(group), color=color, 
+                         linewidth=2, markersize=0, alpha=0.7)
+            plt.legend(title=group_col)
+            x_labels = group_data.select(plot_factor).to_numpy().flatten()
+        else:
+            x_vals = stats.select(plot_factor).to_series().to_list()
+            y_vals = stats.select('ratio').to_series().to_list()
+            counts = stats.select('count').to_series().to_list()
+            
+            # Scale line widths based on counts
+            min_count = min(counts)
+            max_count = max(counts)
+            widths = [1 + 3 * (c - min_count) / (max_count - min_count) if max_count > min_count else 2 for c in counts]
+            
+            plt.plot(x_vals, y_vals, '-o', color='tab:blue',
+                     linewidth=2, markersize=0, alpha=0.7)                     
+            x_labels = stats.select(plot_factor).to_numpy().flatten()
+        
+        # Add reference line at 1.0
+        plt.axhline(y=1.0, color='gray', linestyle='--', alpha=0.5)
+        
+        # Customize the plot
+        default_title = f'Residual Ratios by {factor_col}'
+        if group_col is not None:
+            default_title += f' grouped by {group_col}'
+        plt.title(title or default_title)
+        if needs_binning:
+            plt.xticks(rotation=45, ha='right')
+        plt.xlabel(factor_col)
+        plt.ylabel('Actual / Predicted' + (' (Rebased)' if rebase_means else ''))
+        
+        # Adjust layout and return figure
+        fig.tight_layout()
+        return fig
+
+    def compare_populations(self, column1: str, column2: str, alpha: float = 0.05,
+                          test_type: str = 'auto', equal_var: bool = False) -> PopulationTestResult:
+        """
+        Test if two datasets are from significantly different populations.
+
+        Args:
+            column1: Name of the first column to compare
+            column2: Name of the second column to compare
+            alpha: Significance level (default: 0.05)
+            test_type: Type of test to perform ('t', 'mann_whitney', or 'auto')
+            equal_var: Whether to assume equal variances for t-test (default: False)
+
+        Returns:
+            PopulationTestResult containing test statistics and interpretation
+
+        Raises:
+            ValueError: If columns don't exist or contain non-numeric data
+        """
+        if self.data is None:
+            raise ValueError("No data loaded")
+
+        if column1 not in self.data.columns or column2 not in self.data.columns:
+            raise ValueError(f"Columns {column1} and/or {column2} not found in data")
+
+        # Extract data as numpy arrays
+        data1 = self.data.select(pl.col(column1)).drop_nulls().to_numpy().flatten()
+        data2 = self.data.select(pl.col(column2)).drop_nulls().to_numpy().flatten()
+
+        # Determine test type if auto
+        if test_type == 'auto':
+            # Check for normality using Shapiro-Wilk test
+            from scipy.stats import shapiro
+            _, p1 = shapiro(data1[:min(5000, len(data1))])  # Limit sample size for speed
+            _, p2 = shapiro(data2[:min(5000, len(data2))])
+            
+            # Use t-test if both samples appear normal (p > 0.05), otherwise Mann-Whitney
+            test_type = 't' if (p1 > 0.05 and p2 > 0.05) else 'mann_whitney'
+
+        if test_type == 't':
+            from scipy.stats import ttest_ind, norm
+            
+            # Perform t-test
+            statistic, p_value = ttest_ind(data1, data2, equal_var=equal_var)
+            
+            # Calculate Cohen's d effect size
+            n1, n2 = len(data1), len(data2)
+            pooled_std = np.sqrt(((n1 - 1) * np.std(data1, ddof=1) ** 2 + 
+                                (n2 - 1) * np.std(data2, ddof=1) ** 2) / (n1 + n2 - 2))
+            effect_size = abs(np.mean(data1) - np.mean(data2)) / pooled_std
+            
+            # Calculate confidence interval for difference in means
+            if equal_var:
+                # Pooled standard error
+                se = pooled_std * np.sqrt(1/n1 + 1/n2)
+            else:
+                # Welch's t-test standard error
+                se = np.sqrt(np.var(data1, ddof=1)/n1 + np.var(data2, ddof=1)/n2)
+            
+            ci_lower = (np.mean(data1) - np.mean(data2)) - se * norm.ppf(1 - alpha/2)
+            ci_upper = (np.mean(data1) - np.mean(data2)) + se * norm.ppf(1 - alpha/2)
+            
+        else:  # Mann-Whitney U test
+            from scipy.stats import mannwhitneyu
+            
+            # Perform Mann-Whitney U test
+            statistic, p_value = mannwhitneyu(data1, data2, alternative='two-sided')
+            
+            # Calculate rank-biserial correlation as effect size
+            n1, n2 = len(data1), len(data2)
+            effect_size = 1 - (2 * statistic) / (n1 * n2)
+            
+            # For Mann-Whitney, we'll use bootstrap for confidence interval
+            ci_lower, ci_upper = None, None
+
+        return PopulationTestResult(
+            statistic=statistic,
+            p_value=p_value,
+            effect_size=effect_size,
+            test_type=test_type,
+            is_significant=p_value < alpha,
+            confidence_interval=(ci_lower, ci_upper) if test_type == 't' else None
+        )
