@@ -1866,6 +1866,16 @@ class DataAnalyser:
             ref_s = np.clip(ref_prop, eps, None)
             cur_s = np.clip(cur_prop, eps, None)
             return float(np.sum((cur_s - ref_s) * np.log(cur_s / ref_s)))
+        
+        # Helper: Jensen-Shannon Divergence
+        def jensen_shannon_divergence(p: np.ndarray, q: np.ndarray, eps: float = 1e-10) -> float:
+            """Calculate Jensen-Shannon Divergence between two probability distributions."""
+            p = np.clip(p, eps, None)
+            q = np.clip(q, eps, None)
+            p = p / p.sum()
+            q = q / q.sum()
+            m = 0.5 * (p + q)
+            return float(0.5 * np.sum(p * np.log(p / m)) + 0.5 * np.sum(q * np.log(q / m)))
 
         # Prepare containers
         feat_rows: List[Dict[str, Any]] = []
@@ -1902,12 +1912,14 @@ class DataAnalyser:
                 ref_std = float(np.nanstd(ref_vals, ddof=1)) if ref_vals.size > 1 else np.nan
                 cur_std = float(np.nanstd(cur_vals, ddof=1)) if cur_vals.size > 1 else np.nan
 
-                # PSI using reference quantile bins
+                # Distance metrics and statistical tests
                 if ref_vals.size == 0 or cur_vals.size == 0:
                     feat_psi = np.nan
                     ks_p = np.nan
+                    wasserstein_dist = np.nan
+                    js_div = np.nan
                 else:
-                    # Build bin edges from reference quantiles
+                    # Build bin edges from reference quantiles for PSI and JS
                     qs = np.linspace(0, 1, n_bins + 1)
                     # Use np.unique to ensure monotonic edges
                     edges = np.unique(np.quantile(ref_vals, qs))
@@ -1917,12 +1929,24 @@ class DataAnalyser:
                         max_v = float(np.nanmax(np.concatenate([ref_vals, cur_vals])))
                         edges = np.linspace(min_v, max_v, min(n_bins + 1, 5))
 
-                    # Compute proportions per bin
+                    # Compute proportions per bin for PSI and JS
                     ref_counts, _ = np.histogram(ref_vals, bins=edges)
                     cur_counts, _ = np.histogram(cur_vals, bins=edges)
                     ref_prop = ref_counts / max(1, ref_counts.sum())
                     cur_prop = cur_counts / max(1, cur_counts.sum())
+                    
+                    # PSI
                     feat_psi = psi(ref_prop, cur_prop)
+                    
+                    # Jensen-Shannon Divergence
+                    js_div = jensen_shannon_divergence(ref_prop, cur_prop)
+                    
+                    # Wasserstein Distance (Earth Mover's Distance)
+                    from scipy.stats import wasserstein_distance
+                    try:
+                        wasserstein_dist = float(wasserstein_distance(ref_vals, cur_vals))
+                    except Exception:
+                        wasserstein_dist = np.nan
 
                     # KS test
                     from scipy.stats import ks_2samp
@@ -1937,6 +1961,8 @@ class DataAnalyser:
                     'feature': feat,
                     'type': 'numeric',
                     'psi': float(feat_psi) if feat_psi is not np.nan else np.nan,
+                    'js_divergence': float(js_div) if js_div is not np.nan else np.nan,
+                    'wasserstein_distance': float(wasserstein_dist) if wasserstein_dist is not np.nan else np.nan,
                     'stat_test': 'ks',
                     'p_value': float(ks_p) if ks_p is not np.nan else np.nan,
                     'mean_ref': ref_mean,
@@ -1981,7 +2007,11 @@ class DataAnalyser:
                 ref_prop = cat_table.select((pl.col('ref_cnt') / ref_total).alias('p')).to_numpy().flatten()
                 cur_prop = cat_table.select((pl.col('cur_cnt') / cur_total).alias('p')).to_numpy().flatten()
 
+                # PSI
                 feat_psi = psi(ref_prop, cur_prop)
+                
+                # Jensen-Shannon Divergence
+                js_div = jensen_shannon_divergence(ref_prop, cur_prop)
 
                 # Chi-squared test
                 from scipy.stats import chi2_contingency
@@ -2000,6 +2030,8 @@ class DataAnalyser:
                     'feature': feat,
                     'type': 'categorical',
                     'psi': float(feat_psi) if feat_psi is not np.nan else np.nan,
+                    'js_divergence': float(js_div) if js_div is not np.nan else np.nan,
+                    'wasserstein_distance': np.nan,  # Not applicable for categorical
                     'stat_test': 'chi2',
                     'p_value': float(chi_p) if chi_p is not np.nan else np.nan,
                     'mean_ref': np.nan,
@@ -2016,6 +2048,8 @@ class DataAnalyser:
                 'feature': [],
                 'type': [],
                 'psi': [],
+                'js_divergence': [],
+                'wasserstein_distance': [],
                 'stat_test': [],
                 'p_value': [],
                 'mean_ref': [],
