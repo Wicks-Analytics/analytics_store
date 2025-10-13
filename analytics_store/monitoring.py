@@ -106,11 +106,11 @@ def compare_populations(df: pl.DataFrame, column1: str, column2: str, alpha: flo
         ci_lower, ci_upper = None, None
 
     return PopulationTestResult(
-        statistic=statistic,
-        p_value=p_value,
-        effect_size=effect_size,
+        statistic=float(statistic),
+        p_value=float(p_value),
+        effect_size=float(effect_size),
         test_type=test_type,
-        is_significant=p_value < alpha,
+        is_significant=bool(p_value < alpha),
         confidence_interval=(ci_lower, ci_upper) if test_type == 't' else None
     )
 
