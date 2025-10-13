@@ -47,3 +47,4 @@ docs/_build/
 
 # Jupyter Notebook
 .ipynb_checkpoints
+MIGRATION_GUIDE.md
