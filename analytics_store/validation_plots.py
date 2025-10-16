@@ -3,7 +3,10 @@ import polars as pl
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from typing import Optional, Union, List, Tuple, Dict, Any
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+from typing import Optional, Union, List, Tuple, Dict, Any, Literal
 from dataclasses import dataclass
 from sklearn.metrics import (auc, roc_curve, mean_squared_error, mean_absolute_error, mean_absolute_percentage_error, r2_score, 
                          precision_score, recall_score, f1_score, accuracy_score, confusion_matrix,
@@ -15,11 +18,34 @@ from .model_validation import (
     calculate_roc_curve, bootstrap_roc_curve, calculate_double_lift,
     calculate_regression_metrics
 )
+
+
+def _get_backend_from_config(backend: Optional[str], config: Optional[Dict[str, Any]]) -> str:
+    """Helper function to determine plotting backend.
+    
+    Priority: explicit backend parameter > config > default (matplotlib)
+    
+    Args:
+        backend: Explicit backend parameter (if provided)
+        config: Config dictionary that may contain "plotting_backend"
+        
+    Returns:
+        Backend string ("matplotlib" or "plotly")
+    """
+    if backend is not None:
+        return backend
+    if config is not None and "plotting_backend" in config:
+        return config["plotting_backend"]
+    return "matplotlib"
+
+
 # ============================================================================
 # Lorenz Curve and Gini Coefficient Functions
 # ============================================================================
 def plot_lorenz_curve(df: pl.DataFrame, column: str, exposure_column: Optional[str] = None, 
-                      title: Optional[str] = None, figsize: Tuple[int, int] = (10, 6)) -> plt.Figure:
+                      title: Optional[str] = None, figsize: Tuple[int, int] = (10, 6),
+                      backend: Optional[Literal["matplotlib", "plotly"]] = None,
+                      config: Optional[Dict[str, Any]] = None) -> Union[plt.Figure, go.Figure]:
     """Plot the Lorenz curve for a given column.
     
     Args:
@@ -28,229 +54,348 @@ def plot_lorenz_curve(df: pl.DataFrame, column: str, exposure_column: Optional[s
         exposure_column: Optional name of the column containing exposure/weight values
         title: Optional title for the plot
         figsize: Tuple of (width, height) for the plot
+        backend: Plotting backend to use ("matplotlib" or "plotly"). If None, uses config or defaults to "matplotlib"
+        config: Optional config dict to extract backend from
         
     Raises:
         ValueError: If columns don't exist or contain non-numeric data
     """
+    # Determine backend from config if not explicitly provided
+    backend = _get_backend_from_config(backend, config)
+    
     # Calculate Lorenz curve coordinates
     x, y, gini = calculate_lorenz_curve(df, column, exposure_column)
     
-    # Set up the plot style
-    plt.style.use('seaborn-v0_8-dark')
-    fig, ax = plt.subplots(figsize=figsize)
-    
-    # Plot the Lorenz curve
-    ax.plot(x, y, 'b-', label='Lorenz Curve', linewidth=2)
-    ax.plot([0, 1], [0, 1], 'r--', label='Line of Perfect Equality', linewidth=1)
-    
-    # Add labels and title
-    ax.set_xlabel('Cumulative Proportion of Population')
-    ax.set_ylabel(f'Cumulative Proportion of {column}')
-    if title:
-        ax.set_title(title)
+    if backend == "plotly":
+        # Create plotly figure
+        fig = go.Figure()
+        
+        # Add Lorenz curve
+        fig.add_trace(go.Scatter(
+            x=x, y=y,
+            mode='lines',
+            name='Lorenz Curve',
+            line=dict(color='blue', width=2)
+        ))
+        
+        # Add line of perfect equality
+        fig.add_trace(go.Scatter(
+            x=[0, 1], y=[0, 1],
+            mode='lines',
+            name='Line of Perfect Equality',
+            line=dict(color='red', width=1, dash='dash')
+        ))
+        
+        # Update layout
+        plot_title = title if title else f'Lorenz Curve for {column}<br>Gini Coefficient: {gini:.3f}'
+        fig.update_layout(
+            title=plot_title,
+            xaxis_title='Cumulative Proportion of Population',
+            yaxis_title=f'Cumulative Proportion of {column}',
+            width=figsize[0] * 100,
+            height=figsize[1] * 100,
+            showlegend=True,
+            hovermode='closest',
+            xaxis=dict(scaleanchor="y", scaleratio=1),
+            yaxis=dict(scaleanchor="x", scaleratio=1)
+        )
+        
+        # Add annotation with Gini coefficient
+        fig.add_annotation(
+            text=f'Gini Coefficient: {gini:.3f}',
+            xref="paper", yref="paper",
+            x=0.05, y=0.95,
+            showarrow=False,
+            bgcolor="wheat",
+            opacity=0.8
+        )
+        
+        return fig
     else:
-        ax.set_title(f'Lorenz Curve for {column}\nGini Coefficient: {gini:.3f}')
-    
-    # Add grid and legend
-    ax.grid(True, alpha=0.3)
-    ax.legend()
-    
-    # Set aspect ratio to make the plot square
-    ax.set_aspect('equal')
-    
-    # Add text box with Gini coefficient
-    textstr = f'Gini Coefficient: {gini:.3f}'
-    props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
-    ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=10,
-            verticalalignment='top', bbox=props)
-    
-    plt.tight_layout()
-    return fig
+        # Matplotlib backend
+        plt.style.use('seaborn-v0_8-dark')
+        fig, ax = plt.subplots(figsize=figsize)
+        
+        # Plot the Lorenz curve
+        ax.plot(x, y, 'b-', label='Lorenz Curve', linewidth=2)
+        ax.plot([0, 1], [0, 1], 'r--', label='Line of Perfect Equality', linewidth=1)
+        
+        # Add labels and title
+        ax.set_xlabel('Cumulative Proportion of Population')
+        ax.set_ylabel(f'Cumulative Proportion of {column}')
+        if title:
+            ax.set_title(title)
+        else:
+            ax.set_title(f'Lorenz Curve for {column}\nGini Coefficient: {gini:.3f}')
+        
+        # Add grid and legend
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        
+        # Set aspect ratio to make the plot square
+        ax.set_aspect('equal')
+        
+        # Add text box with Gini coefficient
+        textstr = f'Gini Coefficient: {gini:.3f}'
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+        ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=10,
+                verticalalignment='top', bbox=props)
+        
+        plt.tight_layout()
+        return fig
 
 def plot_lorenz_curve_with_ci(df: pl.DataFrame, column: str, exposure_column: Optional[str] = None,
                               n_iterations: int = 1000, confidence_level: float = 0.95,
                               title: Optional[str] = None, figsize: Tuple[int, int] = (10, 6),
-                              random_seed: Optional[int] = None) -> plt.Figure:
-    """Plot the Lorenz curve with bootstrap confidence intervals.
+                              random_seed: Optional[int] = None,
+                              backend: Optional[Literal["matplotlib", "plotly"]] = None,
+                              config: Optional[Dict[str, Any]] = None) -> Union[plt.Figure, go.Figure]:
+    """Plot Lorenz curve with bootstrapped confidence intervals.
     
     Args:
         df: Polars DataFrame
-        column: Name of the numeric column to plot
+        column: Name of the numeric column to plot Lorenz curve for
         exposure_column: Optional name of the column containing exposure/weight values
         n_iterations: Number of bootstrap iterations
-        confidence_level: Confidence level for the interval
+        confidence_level: Confidence level for the intervals (e.g., 0.95 for 95% CI)
         title: Optional title for the plot
         figsize: Tuple of (width, height) for the plot
         random_seed: Optional random seed for reproducibility
-        
-    Raises:
-        ValueError: If parameters are invalid or data is missing
+        backend: Plotting backend to use ("matplotlib" or "plotly"). If None, uses config or defaults to "matplotlib"
+        config: Optional config dict to extract backend from
     """
-    if not 0 < confidence_level < 1:
-        raise ValueError("Confidence level must be between 0 and 1")
-        
-    # Calculate main Lorenz curve
-    x, y, gini = calculate_lorenz_curve(df, column, exposure_column)
+    # Determine backend from config if not explicitly provided
+    backend = _get_backend_from_config(backend, config)
     
-    # Get bootstrap Gini results
-    bootstrap_result = bootstrap_gini(
+    # Calculate Lorenz curve with confidence intervals
+    x, y, gini, lower_bound, upper_bound, gini_ci = bootstrap_gini(
         df, column, exposure_column, n_iterations, confidence_level, random_seed
     )
     
-    # Set up the plot
-    plt.style.use('seaborn-v0_8-dark')
-    fig, ax = plt.subplots(figsize=figsize)
-    
-    # Plot the main Lorenz curve
-    ax.plot(x, y, 'b-', label='Lorenz Curve', linewidth=2)
-    ax.plot([0, 1], [0, 1], 'r--', label='Line of Perfect Equality', linewidth=1)
-    
-    # Calculate and plot confidence intervals for the curve
-    if exposure_column is not None:
-        data_df = df.select([
-            pl.col(column).alias('value'),
-            pl.col(exposure_column).alias('exposure')
-        ]).drop_nulls()
-        values = data_df.select('value').to_numpy().flatten()
-        exposures = data_df.select('exposure').to_numpy().flatten()
-    else:
-        values = df.select(pl.col(column)).drop_nulls().to_numpy().flatten()
-        exposures = None
+    if backend == "plotly":
+        # Create plotly figure
+        fig = go.Figure()
         
-    n_points = 100
-    bootstrap_curves = np.zeros((n_iterations, n_points))
-    
-    # Calculate bootstrap Lorenz curves
-    x_points = np.linspace(0, 1, n_points)
-    for i in range(n_iterations):
-        if exposures is not None:
-            indices = np.random.randint(0, len(values), size=len(values))
-            boot_values = values[indices]
-            boot_exposures = exposures[indices]
-            
-            ratio = boot_values / (boot_exposures + np.finfo(float).eps)
-            sort_idx = np.argsort(ratio)
-            boot_values = boot_values[sort_idx]
-            boot_exposures = boot_exposures[sort_idx]
-            
-            cum_values = np.cumsum(boot_values)
-            cum_exposures = np.cumsum(boot_exposures)
-            
-            if cum_values[-1] == 0 or cum_exposures[-1] == 0:
-                bootstrap_curves[i] = x_points
-                continue
-            
-            x_boot = np.insert(cum_exposures / cum_exposures[-1], 0, 0)
-            y_boot = np.insert(cum_values / cum_values[-1], 0, 0)
-            
-            # Interpolate to get consistent x points
-            bootstrap_curves[i] = np.interp(x_points, x_boot, y_boot)
-        else:
-            boot_values = np.random.choice(values, size=len(values), replace=True)
-            boot_values.sort()
-            
-            cum_values = np.cumsum(boot_values)
-            x_boot = np.insert(np.arange(1, len(boot_values) + 1) / len(boot_values), 0, 0)
-            y_boot = np.insert(cum_values / cum_values[-1], 0, 0)
-            
-            # Interpolate to get consistent x points
-            bootstrap_curves[i] = np.interp(x_points, x_boot, y_boot)
-    
-    # Calculate confidence intervals for the curves
-    alpha = 1 - confidence_level
-    ci_lower = np.percentile(bootstrap_curves, alpha * 100 / 2, axis=0)
-    ci_upper = np.percentile(bootstrap_curves, 100 - alpha * 100 / 2, axis=0)
-    
-    # Plot confidence intervals
-    ax.fill_between(x_points, ci_lower, ci_upper, alpha=0.2, color='blue',
-                   label=f'{confidence_level*100:.0f}% Confidence Interval')
-    
-    # Add labels and title
-    ax.set_xlabel('Cumulative Proportion of Population')
-    ax.set_ylabel(f'Cumulative Proportion of {column}')
-    if title:
-        ax.set_title(title)
+        # Add confidence interval
+        fig.add_trace(go.Scatter(
+            x=np.concatenate([x, x[::-1]]),
+            y=np.concatenate([upper_bound, lower_bound[::-1]]),
+            fill='toself',
+            fillcolor='rgba(0, 0, 255, 0.2)',
+            line=dict(color='rgba(255,255,255,0)'),
+            name=f'{confidence_level*100:.0f}% Confidence Interval',
+            showlegend=True
+        ))
+        
+        # Add Lorenz curve
+        fig.add_trace(go.Scatter(
+            x=x, y=y,
+            mode='lines',
+            name='Lorenz Curve',
+            line=dict(color='blue', width=2)
+        ))
+        
+        # Add line of perfect equality
+        fig.add_trace(go.Scatter(
+            x=[0, 1], y=[0, 1],
+            mode='lines',
+            name='Line of Perfect Equality',
+            line=dict(color='red', width=1, dash='dash')
+        ))
+        
+        # Update layout
+        plot_title = title if title else f'Lorenz Curve for {column}<br>Gini Coefficient: {gini:.3f} [{gini_ci.lower_bound:.3f}, {gini_ci.upper_bound:.3f}]'
+        fig.update_layout(
+            title=plot_title,
+            xaxis_title='Cumulative Proportion of Population',
+            yaxis_title=f'Cumulative Proportion of {column}',
+            width=figsize[0] * 100,
+            height=figsize[1] * 100,
+            showlegend=True,
+            hovermode='closest',
+            xaxis=dict(scaleanchor="y", scaleratio=1),
+            yaxis=dict(scaleanchor="x", scaleratio=1)
+        )
+        
+        # Add annotation with Gini coefficient and CI
+        fig.add_annotation(
+            text=f'Gini Coefficient: {gini:.3f}<br>95% CI: [{gini_ci.lower_bound:.3f}, {gini_ci.upper_bound:.3f}]',
+            xref="paper", yref="paper",
+            x=0.05, y=0.95,
+            showarrow=False,
+            bgcolor="wheat",
+            opacity=0.8
+        )
+        
+        return fig
     else:
-        ax.set_title(f'Lorenz Curve for {column}\nGini: {gini:.3f} [{bootstrap_result.ci_lower:.3f}, {bootstrap_result.ci_upper:.3f}]')
-    
-    # Add grid and legend
-    ax.grid(True, alpha=0.3)
-    ax.legend()
-    
-    # Set aspect ratio to make the plot square
-    ax.set_aspect('equal')
-    
-    # Add text box with Gini coefficient and CI
-    textstr = (f'Gini: {gini:.3f}\n'
-              f'95% CI: [{bootstrap_result.ci_lower:.3f}, {bootstrap_result.ci_upper:.3f}]')
-    props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
-    ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=10,
-            verticalalignment='top', bbox=props)
-    
-    plt.tight_layout()
-    return fig
+        # Matplotlib backend
+        plt.style.use('seaborn-v0_8-dark')
+        fig, ax = plt.subplots(figsize=figsize)
+        
+        # Plot the main Lorenz curve
+        ax.plot(x, y, 'b-', label='Lorenz Curve', linewidth=2)
+        ax.plot([0, 1], [0, 1], 'r--', label='Line of Perfect Equality', linewidth=1)
+        
+        # Plot confidence intervals
+        ax.fill_between(x, lower_bound, upper_bound, alpha=0.2, color='blue',
+                       label=f'{confidence_level*100:.0f}% Confidence Interval')
+        
+        # Add labels and title
+        ax.set_xlabel('Cumulative Proportion of Population')
+        ax.set_ylabel(f'Cumulative Proportion of {column}')
+        if title:
+            ax.set_title(title)
+        else:
+            ax.set_title(f'Lorenz Curve for {column}\nGini Coefficient: {gini:.3f} [{gini_ci.lower_bound:.3f}, {gini_ci.upper_bound:.3f}]')
+        
+        # Add grid and legend
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        
+        # Set aspect ratio to make the plot square
+        ax.set_aspect('equal')
+        
+        # Add text box with Gini coefficient and CI
+        textstr = (f'Gini Coefficient: {gini:.3f}\n'
+                  f'95% CI: [{gini_ci.lower_bound:.3f}, {gini_ci.upper_bound:.3f}]')
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+        ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=10,
+                verticalalignment='top', bbox=props)
+        
+        plt.tight_layout()
+        return fig
 
 def plot_lift_curve(df: pl.DataFrame, target_column: str, score_column: str, n_bins: int = 10,
-                    title: Optional[str] = None, figsize: Tuple[int, int] = (12, 6)) -> plt.Figure:
+                    title: Optional[str] = None, figsize: Tuple[int, int] = (12, 6),
+                    backend: Optional[Literal["matplotlib", "plotly"]] = None,
+                    config: Optional[Dict[str, Any]] = None) -> Union[plt.Figure, go.Figure]:
     """Plot lift curve showing both point-wise and cumulative lift.
     
     Args:
         df: Polars DataFrame
-        target_column: Name of the column containing actual values
-        score_column: Name of the column containing model scores
+        target_column: Name of the binary target column (0/1)
+        score_column: Name of the score/probability column
         n_bins: Number of bins to divide the data into
         title: Optional title for the plot
         figsize: Tuple of (width, height) for the plot
-        
-    Raises:
-        ValueError: If columns don't exist or contain invalid data
+        backend: Plotting backend to use ("matplotlib" or "plotly"). If None, uses config or defaults to "matplotlib"
+        config: Optional config dict to extract backend from
     """
+    # Determine backend from config if not explicitly provided
+    backend = _get_backend_from_config(backend, config)
+    
     # Calculate lift curve
     lift_result = calculate_lift_curve(df, target_column, score_column, n_bins)
     
-    # Create figure with two subplots
-    plt.style.use('seaborn-v0_8-dark')
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
-    
-    # Plot point-wise lift
-    ax1.plot(lift_result.percentiles, lift_result.score_lift_values, 'red', marker='o', label='Predicted')
-    ax1.plot(lift_result.percentiles, lift_result.target_lift_values, 'blue', marker='o', label='Actual')
-    ax1.axhline(y=1, color='r', linestyle='--', label='Baseline')
-    ax1.set_xlabel('Percentile')
-    ax1.set_ylabel('Lift')
-    ax1.set_title('Point-wise Lift by Percentile')
-    ax1.grid(True, alpha=0.3)
-    ax1.legend()
-    
-    # Plot cumulative lift
-    ax2.plot(lift_result.percentiles, lift_result.score_cumulative_lift, 'red', marker='o', label='Predicted')
-    ax2.plot(lift_result.percentiles, lift_result.target_cumulative_lift, 'blue', marker='o', label='Actual')
-    ax2.axhline(y=1, color='r', linestyle='--', label='Baseline')
-    ax2.set_xlabel('Percentile')
-    ax2.set_ylabel('Cumulative Lift')
-    ax2.set_title('Cumulative Lift by Percentile')
-    ax2.grid(True, alpha=0.3)
-    ax2.legend()
-    
-    # Add overall title if provided
-    if title:
-        fig.suptitle(title)
+    if backend == "plotly":
+        # Create plotly figure with subplots
+        fig = make_subplots(
+            rows=1, cols=2,
+            subplot_titles=('Point-wise Lift by Percentile', 'Cumulative Lift by Percentile')
+        )
         
-    # Add text box with metrics
-    textstr = (f'Baseline: {lift_result.baseline:.3f}\n'
-              f'AUC Lift: {lift_result.auc_score_lift:.3f}')
-    props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
-    fig.text(0.02, 0.98, textstr, transform=fig.transFigure, fontsize=10,
-            verticalalignment='top', bbox=props)
-    
-    plt.tight_layout()
-    return fig
+        # Add point-wise lift traces
+        fig.add_trace(
+            go.Scatter(x=lift_result.percentiles, y=lift_result.score_lift_values,
+                      mode='lines+markers', name='Predicted', line=dict(color='red')),
+            row=1, col=1
+        )
+        fig.add_trace(
+            go.Scatter(x=lift_result.percentiles, y=lift_result.target_lift_values,
+                      mode='lines+markers', name='Actual', line=dict(color='blue')),
+            row=1, col=1
+        )
+        fig.add_hline(y=1, line_dash="dash", line_color="red", row=1, col=1)
+        
+        # Add cumulative lift traces
+        fig.add_trace(
+            go.Scatter(x=lift_result.percentiles, y=lift_result.score_cumulative_lift,
+                      mode='lines+markers', name='Predicted', line=dict(color='red'),
+                      showlegend=False),
+            row=1, col=2
+        )
+        fig.add_trace(
+            go.Scatter(x=lift_result.percentiles, y=lift_result.target_cumulative_lift,
+                      mode='lines+markers', name='Actual', line=dict(color='blue'),
+                      showlegend=False),
+            row=1, col=2
+        )
+        fig.add_hline(y=1, line_dash="dash", line_color="red", row=1, col=2)
+        
+        # Update axes
+        fig.update_xaxes(title_text="Percentile", row=1, col=1)
+        fig.update_xaxes(title_text="Percentile", row=1, col=2)
+        fig.update_yaxes(title_text="Lift", row=1, col=1)
+        fig.update_yaxes(title_text="Cumulative Lift", row=1, col=2)
+        
+        # Update layout
+        fig.update_layout(
+            title_text=title if title else "Lift Curve Analysis",
+            width=figsize[0] * 100,
+            height=figsize[1] * 100,
+            showlegend=True
+        )
+        
+        # Add annotation with metrics
+        fig.add_annotation(
+            text=f'Baseline: {lift_result.baseline:.3f}<br>AUC Lift: {lift_result.auc_score_lift:.3f}',
+            xref="paper", yref="paper",
+            x=0.02, y=0.98,
+            showarrow=False,
+            bgcolor="wheat",
+            opacity=0.8,
+            xanchor='left',
+            yanchor='top'
+        )
+        
+        return fig
+    else:
+        # Matplotlib backend
+        plt.style.use('seaborn-v0_8-dark')
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+        
+        # Plot point-wise lift
+        ax1.plot(lift_result.percentiles, lift_result.score_lift_values, 'red', marker='o', label='Predicted')
+        ax1.plot(lift_result.percentiles, lift_result.target_lift_values, 'blue', marker='o', label='Actual')
+        ax1.axhline(y=1, color='r', linestyle='--', label='Baseline')
+        ax1.set_xlabel('Percentile')
+        ax1.set_ylabel('Lift')
+        ax1.set_title('Point-wise Lift by Percentile')
+        ax1.grid(True, alpha=0.3)
+        ax1.legend()
+        
+        # Plot cumulative lift
+        ax2.plot(lift_result.percentiles, lift_result.score_cumulative_lift, 'red', marker='o', label='Predicted')
+        ax2.plot(lift_result.percentiles, lift_result.target_cumulative_lift, 'blue', marker='o', label='Actual')
+        ax2.axhline(y=1, color='r', linestyle='--', label='Baseline')
+        ax2.set_xlabel('Percentile')
+        ax2.set_ylabel('Cumulative Lift')
+        ax2.set_title('Cumulative Lift by Percentile')
+        ax2.grid(True, alpha=0.3)
+        ax2.legend()
+        
+        # Add overall title if provided
+        if title:
+            fig.suptitle(title)
+            
+        # Add text box with metrics
+        textstr = (f'Baseline: {lift_result.baseline:.3f}\n'
+                  f'AUC Lift: {lift_result.auc_score_lift:.3f}')
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+        fig.text(0.02, 0.98, textstr, transform=fig.transFigure, fontsize=10,
+                verticalalignment='top', bbox=props)
+        
+        plt.tight_layout()
+        return fig
 
 def plot_roc_curve(df: pl.DataFrame, target_column: str, score_column: str,
                    with_ci: bool = True, n_iterations: int = 1000,
                    confidence_level: float = 0.95, title: Optional[str] = None,
                    figsize: Tuple[int, int] = (10, 8),
-                   random_seed: Optional[int] = None) -> plt.Figure:
+                   random_seed: Optional[int] = None,
+                   backend: Optional[Literal["matplotlib", "plotly"]] = None,
+                   config: Optional[Dict[str, Any]] = None) -> Union[plt.Figure, go.Figure]:
     """Plot ROC curve optionally with bootstrap confidence intervals.
     
     Args:
@@ -263,146 +408,293 @@ def plot_roc_curve(df: pl.DataFrame, target_column: str, score_column: str,
         title: Optional title for the plot
         figsize: Tuple of (width, height) for the plot
         random_seed: Optional random seed for reproducibility
+        backend: Plotting backend to use ("matplotlib" or "plotly"). If None, uses config or defaults to "matplotlib"
+        config: Optional config dict to extract backend from
         
     Raises:
         ValueError: If parameters are invalid or data is missing
     """
-    plt.style.use('seaborn-v0_8-dark')
-    fig, ax = plt.subplots(figsize=figsize)
+    # Determine backend from config if not explicitly provided
+    backend = _get_backend_from_config(backend, config)
     
     if with_ci:
         # Get ROC curve with confidence intervals
         roc_result, ci_lower, ci_upper, fpr_points = bootstrap_roc_curve(
             df, target_column, score_column, n_iterations, confidence_level, random_seed
         )
-        
-        # Plot confidence intervals
-        ax.fill_between(fpr_points, ci_lower, ci_upper, color='blue', alpha=0.2,
-                      label=f'{confidence_level*100:.0f}% Confidence Interval')
     else:
         # Just calculate basic ROC curve
         roc_result = calculate_roc_curve(df, target_column, score_column)
+        ci_lower = ci_upper = fpr_points = None
     
-    # Plot ROC curve
-    ax.plot(roc_result.fpr, roc_result.tpr, 'b-', label=f'ROC (AUC = {roc_result.auc_score:.3f})',
-            linewidth=2)
-    
-    # Plot diagonal reference line
-    ax.plot([0, 1], [0, 1], 'r--', label='Random Classifier', linewidth=1)
-    
-    # Mark optimal point
-    ax.plot(roc_result.optimal_point[0], roc_result.optimal_point[1], 'go',
-            label=f'Optimal Point (threshold = {roc_result.optimal_threshold:.3f})')
-    
-    # Add labels and title
-    ax.set_xlabel('False Positive Rate')
-    ax.set_ylabel('True Positive Rate')
-    if title:
-        ax.set_title(title)
+    if backend == "plotly":
+        # Create plotly figure
+        fig = go.Figure()
+        
+        # Add confidence interval if requested
+        if with_ci:
+            fig.add_trace(go.Scatter(
+                x=np.concatenate([fpr_points, fpr_points[::-1]]),
+                y=np.concatenate([ci_upper, ci_lower[::-1]]),
+                fill='toself',
+                fillcolor='rgba(0, 0, 255, 0.2)',
+                line=dict(color='rgba(255,255,255,0)'),
+                name=f'{confidence_level*100:.0f}% Confidence Interval',
+                showlegend=True
+            ))
+        
+        # Add ROC curve
+        fig.add_trace(go.Scatter(
+            x=roc_result.fpr, y=roc_result.tpr,
+            mode='lines',
+            name=f'ROC (AUC = {roc_result.auc_score:.3f})',
+            line=dict(color='blue', width=2)
+        ))
+        
+        # Add diagonal reference line
+        fig.add_trace(go.Scatter(
+            x=[0, 1], y=[0, 1],
+            mode='lines',
+            name='Random Classifier',
+            line=dict(color='red', width=1, dash='dash')
+        ))
+        
+        # Add optimal point
+        fig.add_trace(go.Scatter(
+            x=[roc_result.optimal_point[0]], y=[roc_result.optimal_point[1]],
+            mode='markers',
+            name=f'Optimal Point (threshold = {roc_result.optimal_threshold:.3f})',
+            marker=dict(color='green', size=10)
+        ))
+        
+        # Update layout
+        plot_title = title if title else 'ROC Curve Analysis'
+        fig.update_layout(
+            title=plot_title,
+            xaxis_title='False Positive Rate',
+            yaxis_title='True Positive Rate',
+            width=figsize[0] * 100,
+            height=figsize[1] * 100,
+            showlegend=True,
+            hovermode='closest',
+            xaxis=dict(scaleanchor="y", scaleratio=1),
+            yaxis=dict(scaleanchor="x", scaleratio=1)
+        )
+        
+        # Add annotation with metrics
+        fig.add_annotation(
+            text=f'AUC: {roc_result.auc_score:.3f}<br>Optimal Threshold: {roc_result.optimal_threshold:.3f}<br>Optimal Point FPR: {roc_result.optimal_point[0]:.3f}<br>Optimal Point TPR: {roc_result.optimal_point[1]:.3f}',
+            xref="paper", yref="paper",
+            x=0.05, y=0.95,
+            showarrow=False,
+            bgcolor="wheat",
+            opacity=0.8,
+            xanchor='left',
+            yanchor='top'
+        )
+        
+        return fig
     else:
-        ax.set_title('ROC Curve Analysis')
-    
-    # Add grid and legend
-    ax.grid(True, alpha=0.3)
-    ax.legend(loc='lower right')
-    
-    # Set aspect ratio to make the plot square
-    ax.set_aspect('equal')
-    
-    # Add text box with metrics
-    textstr = (f'AUC: {roc_result.auc_score:.3f}\n'
-              f'Optimal Threshold: {roc_result.optimal_threshold:.3f}\n'
-              f'Optimal Point FPR: {roc_result.optimal_point[0]:.3f}\n'
-              f'Optimal Point TPR: {roc_result.optimal_point[1]:.3f}')
-    props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
-    ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=10,
-            verticalalignment='top', bbox=props)
-    
-    plt.tight_layout()
-    return fig
+        # Matplotlib backend
+        plt.style.use('seaborn-v0_8-dark')
+        fig, ax = plt.subplots(figsize=figsize)
+        
+        # Plot confidence intervals if requested
+        if with_ci:
+            ax.fill_between(fpr_points, ci_lower, ci_upper, color='blue', alpha=0.2,
+                          label=f'{confidence_level*100:.0f}% Confidence Interval')
+        
+        # Plot ROC curve
+        ax.plot(roc_result.fpr, roc_result.tpr, 'b-', label=f'ROC (AUC = {roc_result.auc_score:.3f})',
+                linewidth=2)
+        
+        # Plot diagonal reference line
+        ax.plot([0, 1], [0, 1], 'r--', label='Random Classifier', linewidth=1)
+        
+        # Mark optimal point
+        ax.plot(roc_result.optimal_point[0], roc_result.optimal_point[1], 'go',
+                label=f'Optimal Point (threshold = {roc_result.optimal_threshold:.3f})')
+        
+        # Add labels and title
+        ax.set_xlabel('False Positive Rate')
+        ax.set_ylabel('True Positive Rate')
+        if title:
+            ax.set_title(title)
+        else:
+            ax.set_title('ROC Curve Analysis')
+        
+        # Add grid and legend
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='lower right')
+        
+        # Set aspect ratio to make the plot square
+        ax.set_aspect('equal')
+        
+        # Add text box with metrics
+        textstr = (f'AUC: {roc_result.auc_score:.3f}\n'
+                  f'Optimal Threshold: {roc_result.optimal_threshold:.3f}\n'
+                  f'Optimal Point FPR: {roc_result.optimal_point[0]:.3f}\n'
+                  f'Optimal Point TPR: {roc_result.optimal_point[1]:.3f}')
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+        ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=10,
+                verticalalignment='top', bbox=props)
+        
+        plt.tight_layout()
+        return fig
 
 def plot_double_lift(df: pl.DataFrame, target_column: str, score1_column: str, score2_column: str,
                      n_bins: int = 10, title: Optional[str] = None, 
-                     figsize: Tuple[int, int] = (15, 5)) -> plt.Figure:
-    """Create a double lift plot comparing two scoring variables.
+                     figsize: Tuple[int, int] = (15, 5),
+                     backend: Optional[Literal["matplotlib", "plotly"]] = None,
+                     config: Optional[Dict[str, Any]] = None) -> Union[plt.Figure, go.Figure]:
+    """Plot double lift curves comparing two models.
     
     Args:
         df: Polars DataFrame
-        target_column: Name of the column containing actual values
-        score1_column: Name of the first score/prediction column
-        score2_column: Name of the second score/prediction column
-        n_bins: Number of bins for lift calculation
+        target_column: Name of the binary target column (0/1)
+        score1_column: Name of the first score/probability column
+        score2_column: Name of the second score/probability column
+        n_bins: Number of bins to divide the data into
         title: Optional title for the plot
         figsize: Tuple of (width, height) for the plot
-        
-    Raises:
-        ValueError: If columns don't exist or contain invalid data
+        backend: Plotting backend to use ("matplotlib" or "plotly"). If None, uses config or defaults to "matplotlib"
+        config: Optional config dict to extract backend from
     """
-    # Calculate double lift results
-    results = calculate_double_lift(df, target_column, score1_column, score2_column, n_bins)
+    # Determine backend from config if not explicitly provided
+    backend = _get_backend_from_config(backend, config)
     
-    # Create figure with three subplots
-    plt.style.use('seaborn-v0_8-dark')
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=figsize)
+    # Calculate double lift
+    result = calculate_double_lift(df, target_column, score1_column, score2_column, n_bins)
     
-    # Plot 1: Compare point-wise lift curves
-    ax1.plot(results.lift1.percentiles, results.lift1.score_lift_values, 'b-', 
-            marker='o', label=score1_column)
-    ax1.plot(results.lift2.percentiles, results.lift2.score_lift_values, 'g-',
-            marker='s', label=score2_column)
-    ax1.axhline(y=1, color='r', linestyle='--', label='Baseline')
-    ax1.set_xlabel('Percentile')
-    ax1.set_ylabel('Lift')
-    ax1.set_title('Point-wise Lift Comparison')
-    ax1.grid(True, alpha=0.3)
-    ax1.legend()
-    
-    # Plot 2: Compare cumulative lift curves
-    ax2.plot(results.lift1.percentiles, results.lift1.score_cumulative_lift, 'b-',
-            marker='o', label=score1_column)
-    ax2.plot(results.lift2.percentiles, results.lift2.score_cumulative_lift, 'g-',
-            marker='s', label=score2_column)
-    ax2.axhline(y=1, color='r', linestyle='--', label='Baseline')
-    ax2.set_xlabel('Percentile')
-    ax2.set_ylabel('Cumulative Lift')
-    ax2.set_title('Cumulative Lift Comparison')
-    ax2.grid(True, alpha=0.3)
-    ax2.legend()
-    
-    # Plot 3: Score correlation scatter plot
-    data_df = df.select([
-        pl.col(score1_column).alias('score1'),
-        pl.col(score2_column).alias('score2')
-    ]).drop_nulls()
-    
-    score1 = data_df.select('score1').to_numpy().flatten()
-    score2 = data_df.select('score2').to_numpy().flatten()
-    
-    ax3.scatter(score1, score2, alpha=0.5, s=20)
-    ax3.set_xlabel(score1_column)
-    ax3.set_ylabel(score2_column)
-    ax3.set_title('Score Correlation')
-    ax3.grid(True, alpha=0.3)
-    
-    # Add text box with metrics
-    textstr = (f'Correlation: {results.correlation:.3f}\n'
-              f'Joint Lift: {results.joint_lift:.3f}\n'
-              f'Conditional Lift: {results.conditional_lift:.3f}\n\n'
-              f'AUC Lift 1: {results.lift1.auc_score_lift:.3f}\n'
-              f'AUC Lift 2: {results.lift2.auc_score_lift:.3f}')
-    props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
-    ax3.text(0.05, 0.95, textstr, transform=ax3.transAxes, fontsize=10,
-            verticalalignment='top', bbox=props)
-    
-    # Add overall title if provided
-    if title:
-        fig.suptitle(title, y=1.05)
-    
-    plt.tight_layout()
-    return fig
+    if backend == "plotly":
+        # Create plotly figure with subplots
+        fig = make_subplots(
+            rows=1, cols=3,
+            subplot_titles=('Point-wise Lift Comparison', 'Cumulative Lift Comparison', 'Score Correlation')
+        )
+        
+        # Plot 1: Point-wise lift
+        fig.add_trace(
+            go.Scatter(x=result.lift1.percentiles, y=result.lift1.score_lift_values,
+                      mode='lines+markers', name=score1_column, line=dict(color='blue')),
+            row=1, col=1
+        )
+        fig.add_trace(
+            go.Scatter(x=result.lift2.percentiles, y=result.lift2.score_lift_values,
+                      mode='lines+markers', name=score2_column, line=dict(color='green'),
+                      marker=dict(symbol='square')),
+            row=1, col=1
+        )
+        fig.add_hline(y=1, line_dash="dash", line_color="red", row=1, col=1)
+        
+        # Plot 2: Cumulative lift
+        fig.add_trace(
+            go.Scatter(x=result.lift1.percentiles, y=result.lift1.score_cumulative_lift,
+                      mode='lines+markers', name=score1_column, line=dict(color='blue'),
+                      showlegend=False),
+            row=1, col=2
+        )
+        fig.add_trace(
+            go.Scatter(x=result.lift2.percentiles, y=result.lift2.score_cumulative_lift,
+                      mode='lines+markers', name=score2_column, line=dict(color='green'),
+                      marker=dict(symbol='square'), showlegend=False),
+            row=1, col=2
+        )
+        fig.add_hline(y=1, line_dash="dash", line_color="red", row=1, col=2)
+        
+        # Plot 3: Scatter plot
+        fig.add_trace(
+            go.Scatter(x=df[score1_column], y=df[score2_column], mode='markers',
+                      marker=dict(size=5, opacity=0.5), showlegend=False),
+            row=1, col=3
+        )
+        
+        # Update axes
+        fig.update_xaxes(title_text="Percentile", row=1, col=1)
+        fig.update_xaxes(title_text="Percentile", row=1, col=2)
+        fig.update_xaxes(title_text=score1_column, row=1, col=3)
+        fig.update_yaxes(title_text="Lift", row=1, col=1)
+        fig.update_yaxes(title_text="Cumulative Lift", row=1, col=2)
+        fig.update_yaxes(title_text=score2_column, row=1, col=3)
+        
+        # Update layout
+        fig.update_layout(
+            title_text=title if title else "Double Lift Analysis",
+            width=figsize[0] * 100,
+            height=figsize[1] * 100,
+            showlegend=True
+        )
+        
+        # Add annotation with metrics
+        fig.add_annotation(
+            text=f'Correlation: {result.correlation:.3f}<br>Joint Lift: {result.joint_lift:.3f}<br>Conditional Lift: {result.conditional_lift:.3f}<br><br>AUC Lift 1: {result.lift1.auc_score_lift:.3f}<br>AUC Lift 2: {result.lift2.auc_score_lift:.3f}',
+            xref="paper", yref="paper",
+            x=0.68, y=0.95,
+            showarrow=False,
+            bgcolor="wheat",
+            opacity=0.8,
+            xanchor='left',
+            yanchor='top'
+        )
+        
+        return fig
+    else:
+        # Matplotlib backend
+        plt.style.use('seaborn-v0_8-dark')
+        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=figsize)
+        
+        # Plot 1: Compare point-wise lift curves
+        ax1.plot(result.lift1.percentiles, result.lift1.score_lift_values, 'b-', 
+                marker='o', label=score1_column)
+        ax1.plot(result.lift2.percentiles, result.lift2.score_lift_values, 'g-',
+                marker='s', label=score2_column)
+        ax1.axhline(y=1, color='r', linestyle='--', label='Baseline')
+        ax1.set_xlabel('Percentile')
+        ax1.set_ylabel('Lift')
+        ax1.set_title('Point-wise Lift Comparison')
+        ax1.grid(True, alpha=0.3)
+        ax1.legend()
+        
+        # Plot 2: Compare cumulative lift curves
+        ax2.plot(result.lift1.percentiles, result.lift1.score_cumulative_lift, 'b-',
+                marker='o', label=score1_column)
+        ax2.plot(result.lift2.percentiles, result.lift2.score_cumulative_lift, 'g-',
+                marker='s', label=score2_column)
+        ax2.axhline(y=1, color='r', linestyle='--', label='Baseline')
+        ax2.set_xlabel('Percentile')
+        ax2.set_ylabel('Cumulative Lift')
+        ax2.set_title('Cumulative Lift Comparison')
+        ax2.grid(True, alpha=0.3)
+        ax2.legend()
+        
+        # Plot 3: Score correlation scatter plot
+        ax3.scatter(df[score1_column], df[score2_column], alpha=0.5, s=20)
+        ax3.set_xlabel(score1_column)
+        ax3.set_ylabel(score2_column)
+        ax3.set_title('Score Correlation')
+        ax3.grid(True, alpha=0.3)
+        
+        # Add text box with metrics
+        textstr = (f'Correlation: {result.correlation:.3f}\n'
+                  f'Joint Lift: {result.joint_lift:.3f}\n'
+                  f'Conditional Lift: {result.conditional_lift:.3f}\n\n'
+                  f'AUC Lift 1: {result.lift1.auc_score_lift:.3f}\n'
+                  f'AUC Lift 2: {result.lift2.auc_score_lift:.3f}')
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+        ax3.text(0.05, 0.95, textstr, transform=ax3.transAxes, fontsize=10,
+                verticalalignment='top', bbox=props)
+        
+        # Add overall title if provided
+        if title:
+            fig.suptitle(title, y=1.05)
+        
+        plt.tight_layout()
+        return fig
 
 def plot_regression_diagnostics(df: pl.DataFrame, actual_column: str, predicted_column: str,
-                               title: Optional[str] = None, figsize: Tuple[int, int] = (12, 8)) -> plt.Figure:
+                               title: Optional[str] = None, figsize: Tuple[int, int] = (12, 8),
+                               backend: Optional[Literal["matplotlib", "plotly"]] = None,
+                               config: Optional[Dict[str, Any]] = None) -> Union[plt.Figure, go.Figure]:
     """Create a comprehensive set of regression diagnostic plots.
     
     Creates a 2x2 panel of plots:
@@ -417,13 +709,12 @@ def plot_regression_diagnostics(df: pl.DataFrame, actual_column: str, predicted_
         predicted_column: Name of the column containing predicted values
         title: Optional title for the plot
         figsize: Tuple of (width, height) for the plot
-    
-    Returns:
-        matplotlib.figure.Figure: The created figure
-    
-    Raises:
-        ValueError: If columns don't exist or contain non-numeric data
+        backend: Plotting backend to use ("matplotlib" or "plotly"). If None, uses config or defaults to "matplotlib"
+        config: Optional config dict to extract backend from
     """
+    # Determine backend from config if not explicitly provided
+    backend = _get_backend_from_config(backend, config)
+    
     if actual_column not in df.columns:
         raise ValueError(f"Column '{actual_column}' not found in data")
         
@@ -442,64 +733,156 @@ def plot_regression_diagnostics(df: pl.DataFrame, actual_column: str, predicted_
     # Calculate residuals
     residuals = actual - predicted
     
-    # Create figure and subplots
-    plt.style.use('default')
-    sns.set_theme()
-    fig = plt.figure(figsize=figsize)
-    
-    # 1. Actual vs Predicted scatter plot
-    ax1 = plt.subplot(221)
-    ax1.scatter(predicted, actual, alpha=0.5)
-    ax1.plot([actual.min(), actual.max()], [actual.min(), actual.max()], 'r--', lw=2)
-    ax1.set_xlabel('Predicted Values')
-    ax1.set_ylabel('Actual Values')
-    ax1.set_title('Actual vs Predicted')
-    ax1.grid(True, alpha=0.3)
-    
-    # 2. Residuals vs Predicted
-    ax2 = plt.subplot(222)
-    ax2.scatter(predicted, residuals, alpha=0.5)
-    ax2.axhline(y=0, color='r', linestyle='--')
-    ax2.set_xlabel('Predicted Values')
-    ax2.set_ylabel('Residuals')
-    ax2.set_title('Residuals vs Predicted')
-    ax2.grid(True, alpha=0.3)
-    
-    # 3. Residual histogram
-    ax3 = plt.subplot(223)
-    ax3.hist(residuals, bins=30, edgecolor='black')
-    ax3.set_xlabel('Residual Value')
-    ax3.set_ylabel('Count')
-    ax3.set_title('Residual Distribution')
-    ax3.grid(True, alpha=0.3)
-    
-    # 4. Q-Q plot
-    ax4 = plt.subplot(224)
-    from scipy import stats
-    stats.probplot(residuals, dist="norm", plot=ax4)
-    ax4.set_title('Normal Q-Q Plot')
-    ax4.grid(True, alpha=0.3)
-    
-    # Add overall title if provided
-    if title:
-        fig.suptitle(title)
-        
-    # Add text box with metrics
+    # Calculate metrics
     metrics = calculate_regression_metrics(df, actual_column, predicted_column)
-    textstr = (f'RMSE: {metrics.rmse:.2f}\n'
-              f'MAE: {metrics.mae:.2f}\n'
-              f'R²: {metrics.r2:.3f}')
-    props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
-    fig.text(0.02, 0.98, textstr, transform=fig.transFigure, fontsize=10,
-            verticalalignment='top', bbox=props)
     
-    plt.tight_layout()
-    return fig
+    if backend == "plotly":
+        from scipy import stats as scipy_stats
+        
+        # Create Q-Q plot data
+        qq_result = scipy_stats.probplot(residuals, dist="norm")
+        theoretical_quantiles = qq_result[0][0]
+        ordered_values = qq_result[0][1]
+        slope = qq_result[1][0]
+        intercept = qq_result[1][1]
+        fit_line = slope * theoretical_quantiles + intercept
+        
+        # Create plotly figure with subplots
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=('Actual vs Predicted', 'Residuals vs Predicted', 
+                          'Residual Distribution', 'Normal Q-Q Plot')
+        )
+        
+        # 1. Actual vs Predicted
+        fig.add_trace(
+            go.Scatter(x=predicted, y=actual, mode='markers',
+                      marker=dict(size=5, opacity=0.5), showlegend=False),
+            row=1, col=1
+        )
+        fig.add_trace(
+            go.Scatter(x=[actual.min(), actual.max()], y=[actual.min(), actual.max()],
+                      mode='lines', line=dict(color='red', dash='dash'),
+                      showlegend=False),
+            row=1, col=1
+        )
+        
+        # 2. Residuals vs Predicted
+        fig.add_trace(
+            go.Scatter(x=predicted, y=residuals, mode='markers',
+                      marker=dict(size=5, opacity=0.5), showlegend=False),
+            row=1, col=2
+        )
+        fig.add_hline(y=0, line_dash="dash", line_color="red", row=1, col=2)
+        
+        # 3. Residual histogram
+        fig.add_trace(
+            go.Histogram(x=residuals, nbinsx=30, showlegend=False),
+            row=2, col=1
+        )
+        
+        # 4. Q-Q plot
+        fig.add_trace(
+            go.Scatter(x=theoretical_quantiles, y=ordered_values, mode='markers',
+                      marker=dict(size=5), showlegend=False, name='Data'),
+            row=2, col=2
+        )
+        fig.add_trace(
+            go.Scatter(x=theoretical_quantiles, y=fit_line, mode='lines',
+                      line=dict(color='red'), showlegend=False, name='Fit'),
+            row=2, col=2
+        )
+        
+        # Update axes labels
+        fig.update_xaxes(title_text="Predicted Values", row=1, col=1)
+        fig.update_xaxes(title_text="Predicted Values", row=1, col=2)
+        fig.update_xaxes(title_text="Residual Value", row=2, col=1)
+        fig.update_xaxes(title_text="Theoretical Quantiles", row=2, col=2)
+        fig.update_yaxes(title_text="Actual Values", row=1, col=1)
+        fig.update_yaxes(title_text="Residuals", row=1, col=2)
+        fig.update_yaxes(title_text="Count", row=2, col=1)
+        fig.update_yaxes(title_text="Ordered Values", row=2, col=2)
+        
+        # Update layout
+        fig.update_layout(
+            title_text=title if title else "Regression Diagnostics",
+            width=figsize[0] * 100,
+            height=figsize[1] * 100,
+            showlegend=False
+        )
+        
+        # Add annotation with metrics
+        fig.add_annotation(
+            text=f'RMSE: {metrics.rmse:.2f}<br>MAE: {metrics.mae:.2f}<br>R²: {metrics.r2:.3f}',
+            xref="paper", yref="paper",
+            x=0.02, y=0.98,
+            showarrow=False,
+            bgcolor="wheat",
+            opacity=0.8,
+            xanchor='left',
+            yanchor='top'
+        )
+        
+        return fig
+    else:
+        # Matplotlib backend
+        plt.style.use('default')
+        sns.set_theme()
+        fig = plt.figure(figsize=figsize)
+        
+        # 1. Actual vs Predicted scatter plot
+        ax1 = plt.subplot(221)
+        ax1.scatter(predicted, actual, alpha=0.5)
+        ax1.plot([actual.min(), actual.max()], [actual.min(), actual.max()], 'r--', lw=2)
+        ax1.set_xlabel('Predicted Values')
+        ax1.set_ylabel('Actual Values')
+        ax1.set_title('Actual vs Predicted')
+        ax1.grid(True, alpha=0.3)
+        
+        # 2. Residuals vs Predicted
+        ax2 = plt.subplot(222)
+        ax2.scatter(predicted, residuals, alpha=0.5)
+        ax2.axhline(y=0, color='r', linestyle='--')
+        ax2.set_xlabel('Predicted Values')
+        ax2.set_ylabel('Residuals')
+        ax2.set_title('Residuals vs Predicted')
+        ax2.grid(True, alpha=0.3)
+        
+        # 3. Residual histogram
+        ax3 = plt.subplot(223)
+        ax3.hist(residuals, bins=30, edgecolor='black')
+        ax3.set_xlabel('Residual Value')
+        ax3.set_ylabel('Count')
+        ax3.set_title('Residual Distribution')
+        ax3.grid(True, alpha=0.3)
+        
+        # 4. Q-Q plot
+        ax4 = plt.subplot(224)
+        from scipy import stats
+        stats.probplot(residuals, dist="norm", plot=ax4)
+        ax4.set_title('Normal Q-Q Plot')
+        ax4.grid(True, alpha=0.3)
+        
+        # Add overall title if provided
+        if title:
+            fig.suptitle(title)
+            
+        # Add text box with metrics
+        textstr = (f'RMSE: {metrics.rmse:.2f}\n'
+                  f'MAE: {metrics.mae:.2f}\n'
+                  f'R²: {metrics.r2:.3f}')
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+        fig.text(0.02, 0.98, textstr, transform=fig.transFigure, fontsize=10,
+                verticalalignment='top', bbox=props)
+        
+        plt.tight_layout()
+        return fig
 
 def plot_actual_vs_expected_by_factor(df: pl.DataFrame, actual_column: str, predicted_column: str, factor_column: str,
                                      exposure_column: Optional[str] = None, title: Optional[str] = None, 
                                      figsize: Optional[Tuple[int, int]] = None,
-                                     n_bins: int = 20) -> plt.Figure:
+                                     n_bins: int = 20,
+                                     backend: Literal["matplotlib", "plotly"] = "matplotlib") -> Union[plt.Figure, go.Figure]:
     """Create an actual vs expected plot grouped by a factor on the x-axis.
     
     Args:
@@ -511,10 +894,14 @@ def plot_actual_vs_expected_by_factor(df: pl.DataFrame, actual_column: str, pred
         title: Optional title for the plot
         figsize: Optional tuple of (width, height) for the plot
         n_bins: Optional number of bins to split numeric factor columns into
+        backend: Plotting backend to use ("matplotlib" or "plotly")
         
     Raises:
         ValueError: If columns don't exist or contain invalid data
     """
+    if backend == "plotly":
+        raise NotImplementedError("Plotly backend is not yet implemented for plot_actual_vs_expected_by_factor. Please use backend='matplotlib'.")
+    
     required_cols = [actual_column, predicted_column, factor_column]
     if exposure_column is not None:
         required_cols.append(exposure_column)
@@ -653,7 +1040,8 @@ def plot_actual_vs_expected_by_factor(df: pl.DataFrame, actual_column: str, pred
 def plot_residual_ratios(df: pl.DataFrame, actual_col: str, predicted_col: str, factor_col: str,
                         group_col: Optional[str] = None, rebase_means: bool = False,
                         n_bins: int = 20,
-                        title: Optional[str] = None, figsize: Tuple[int, int] = (12, 6)) -> plt.Figure:
+                        title: Optional[str] = None, figsize: Tuple[int, int] = (12, 6),
+                        backend: Literal["matplotlib", "plotly"] = "matplotlib") -> Union[plt.Figure, go.Figure]:
     """Plot the residual ratio (actual/predicted) by a factor with separate lines for each group.
     
     Args:
@@ -666,10 +1054,14 @@ def plot_residual_ratios(df: pl.DataFrame, actual_col: str, predicted_col: str, 
         n_bins: Number of bins for numeric factors
         title: Optional title for the plot
         figsize: Tuple of (width, height) for the plot
+        backend: Plotting backend to use ("matplotlib" or "plotly")
         
     Raises:
         ValueError: If required columns don't exist or contain invalid data
     """
+    if backend == "plotly":
+        raise NotImplementedError("Plotly backend is not yet implemented for plot_residual_ratios. Please use backend='matplotlib'.")
+    
     required_cols = [actual_col, predicted_col, factor_col]
     if group_col is not None:
         required_cols.append(group_col)
