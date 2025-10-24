@@ -232,37 +232,52 @@ def get_missing_values(df: pl.DataFrame) -> pl.DataFrame:
 # ============================================================================
 
 def calculate_lorenz_curve(df: pl.DataFrame, column: str, 
-                          exposure_column: Optional[str] = None) -> Tuple[np.ndarray, np.ndarray, float]:
+                          exposure_column: Optional[str] = None,
+                          observed_column: Optional[str] = None) -> Tuple[np.ndarray, np.ndarray, float]:
     """Calculate the Lorenz curve coordinates and Gini coefficient.
     
     Args:
         df: Polars DataFrame
-        column: Name of the numeric column to calculate Lorenz curve for
+        column: Name of the numeric column to order by (e.g., predicted values)
         exposure_column: Optional name of the column containing exposure/weight values
+        observed_column: Optional name of the column to calculate Lorenz curve for.
+                        If provided, data is ordered by 'column' but Lorenz curve
+                        is calculated using 'observed_column' values.
         
     Returns:
         Tuple containing (x_coords, y_coords, gini_coefficient)
     """
     if column not in df.columns:
         raise ValueError(f"Column '{column}' not found in data")
+    
+    if observed_column is not None and observed_column not in df.columns:
+        raise ValueError(f"Observed column '{observed_column}' not found in data")
         
     try:
         if exposure_column is not None:
             if exposure_column not in df.columns:
                 raise ValueError(f"Exposure column '{exposure_column}' not found in data")
-                
-            data_df = df.select([
-                pl.col(column).alias('value'),
-                pl.col(exposure_column).alias('exposure')
-            ]).drop_nulls()
             
+            # Select columns based on whether observed_column is provided
+            select_cols = [
+                pl.col(column).alias('sort_value'),
+                pl.col(exposure_column).alias('exposure')
+            ]
+            if observed_column is not None:
+                select_cols.append(pl.col(observed_column).alias('value'))
+            else:
+                select_cols.append(pl.col(column).alias('value'))
+                
+            data_df = df.select(select_cols).drop_nulls()
+            
+            sort_values = data_df.select('sort_value').to_numpy().flatten()
             values = data_df.select('value').to_numpy().flatten()
             exposures = data_df.select('exposure').to_numpy().flatten()
             
             if not np.all(exposures >= 0):
                 raise ValueError("Exposure values must be non-negative")
             
-            ratio = values / (exposures + np.finfo(float).eps)
+            ratio = sort_values / (exposures + np.finfo(float).eps)
             sort_idx = np.argsort(ratio)
             values = values[sort_idx]
             exposures = exposures[sort_idx]
@@ -277,8 +292,22 @@ def calculate_lorenz_curve(df: pl.DataFrame, column: str,
             y = np.insert(cum_values / cum_values[-1], 0, 0)
             
         else:
-            values = df.select(pl.col(column)).drop_nulls().to_numpy().flatten()
-            values.sort()
+            # Select columns based on whether observed_column is provided
+            if observed_column is not None:
+                data_df = df.select([
+                    pl.col(column).alias('sort_value'),
+                    pl.col(observed_column).alias('value')
+                ]).drop_nulls()
+                
+                sort_values = data_df.select('sort_value').to_numpy().flatten()
+                values = data_df.select('value').to_numpy().flatten()
+                
+                # Sort values by sort_value (predicted) but use values (observed) for Lorenz
+                sort_idx = np.argsort(sort_values)
+                values = values[sort_idx]
+            else:
+                values = df.select(pl.col(column)).drop_nulls().to_numpy().flatten()
+                values.sort()
             
             if len(values) == 0:
                 raise ValueError(f"Column '{column}' has no valid numeric data")
@@ -300,30 +329,38 @@ def calculate_lorenz_curve(df: pl.DataFrame, column: str,
 
 
 def calculate_gini(df: pl.DataFrame, column: str, 
-                  exposure_column: Optional[str] = None) -> float:
+                  exposure_column: Optional[str] = None,
+                  observed_column: Optional[str] = None) -> float:
     """Calculate the Gini coefficient for a numeric column.
     
     Args:
         df: Polars DataFrame
-        column: Name of the numeric column
+        column: Name of the numeric column to order by (e.g., predicted values)
         exposure_column: Optional exposure/weight column
+        observed_column: Optional name of the column to calculate Gini for.
+                        If provided, data is ordered by 'column' but Gini
+                        is calculated using 'observed_column' values.
         
     Returns:
         float: Gini coefficient between 0 and 1
     """
-    _, _, gini = calculate_lorenz_curve(df, column, exposure_column)
+    _, _, gini = calculate_lorenz_curve(df, column, exposure_column, observed_column)
     return gini
 
 
-def bootstrap_gini(df: pl.DataFrame, column: str, exposure_column: Optional[str] = None, 
+def bootstrap_gini(df: pl.DataFrame, column: str, exposure_column: Optional[str] = None,
+                   observed_column: Optional[str] = None,
                    n_iterations: int = 1000, confidence_level: float = 0.95,
                    random_seed: Optional[int] = None) -> BootstrapResult:
     """Calculate bootstrap confidence intervals for the Gini coefficient.
     
     Args:
         df: Polars DataFrame
-        column: Name of the numeric column
+        column: Name of the numeric column to order by (e.g., predicted values)
         exposure_column: Optional exposure/weight column
+        observed_column: Optional name of the column to calculate Gini for.
+                        If provided, data is ordered by 'column' but Gini
+                        is calculated using 'observed_column' values.
         n_iterations: Number of bootstrap iterations
         confidence_level: Confidence level for the interval
         random_seed: Optional random seed
@@ -337,16 +374,24 @@ def bootstrap_gini(df: pl.DataFrame, column: str, exposure_column: Optional[str]
     if n_iterations < 100:
         raise ValueError("Number of iterations should be at least 100")
         
-    point_estimate = calculate_gini(df, column, exposure_column)
+    point_estimate = calculate_gini(df, column, exposure_column, observed_column)
     
     if random_seed is not None:
         np.random.seed(random_seed)
     
     if exposure_column is not None:
-        data_df = df.select([
-            pl.col(column).alias('value'),
+        # Select columns based on whether observed_column is provided
+        select_cols = [
+            pl.col(column).alias('sort_value'),
             pl.col(exposure_column).alias('exposure')
-        ]).drop_nulls()
+        ]
+        if observed_column is not None:
+            select_cols.append(pl.col(observed_column).alias('value'))
+        else:
+            select_cols.append(pl.col(column).alias('value'))
+            
+        data_df = df.select(select_cols).drop_nulls()
+        sort_values = data_df.select('sort_value').to_numpy().flatten()
         values = data_df.select('value').to_numpy().flatten()
         exposures = data_df.select('exposure').to_numpy().flatten()
         n_samples = len(values)
@@ -354,10 +399,11 @@ def bootstrap_gini(df: pl.DataFrame, column: str, exposure_column: Optional[str]
         bootstrap_samples = np.zeros(n_iterations)
         for i in range(n_iterations):
             indices = np.random.randint(0, n_samples, size=n_samples)
+            boot_sort_values = sort_values[indices]
             boot_values = values[indices]
             boot_exposures = exposures[indices]
             
-            ratio = boot_values / (boot_exposures + np.finfo(float).eps)
+            ratio = boot_sort_values / (boot_exposures + np.finfo(float).eps)
             sort_idx = np.argsort(ratio)
             sorted_values = boot_values[sort_idx]
             sorted_exposures = boot_exposures[sort_idx]
@@ -375,13 +421,29 @@ def bootstrap_gini(df: pl.DataFrame, column: str, exposure_column: Optional[str]
             area_under_curve = np.sum((y[1:] + y[:-1]) * np.diff(x)) / 2
             bootstrap_samples[i] = 1 - 2 * area_under_curve
     else:
-        values = df.select(pl.col(column)).drop_nulls().to_numpy().flatten()
+        # Select columns based on whether observed_column is provided
+        if observed_column is not None:
+            data_df = df.select([
+                pl.col(column).alias('sort_value'),
+                pl.col(observed_column).alias('value')
+            ]).drop_nulls()
+            sort_values = data_df.select('sort_value').to_numpy().flatten()
+            values = data_df.select('value').to_numpy().flatten()
+        else:
+            values = df.select(pl.col(column)).drop_nulls().to_numpy().flatten()
+            sort_values = values.copy()
+            
         n_samples = len(values)
         
         bootstrap_samples = np.zeros(n_iterations)
         for i in range(n_iterations):
-            boot_values = np.random.choice(values, size=n_samples, replace=True)
-            boot_values.sort()
+            indices = np.random.choice(n_samples, size=n_samples, replace=True)
+            boot_sort_values = sort_values[indices]
+            boot_values = values[indices]
+            
+            # Sort by sort_values but use values for Gini calculation
+            sort_idx = np.argsort(boot_sort_values)
+            boot_values = boot_values[sort_idx]
             
             n = len(boot_values)
             cum_values = np.cumsum(boot_values)

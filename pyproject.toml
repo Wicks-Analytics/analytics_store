@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "analytics-store"
 version = "0.1.0"
 authors = [
-    { name="Wicks Analytics LTD", email="wicks.analytics.ltd@gmail.com" }
+    { name="Wicks Analytics LTD" }
 ]
 description = "A Python package for data analysis and analytics using Polars"
 readme = "README.md"
